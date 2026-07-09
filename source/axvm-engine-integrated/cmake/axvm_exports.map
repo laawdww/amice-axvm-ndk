@@ -1,0 +1,18 @@
+{
+  global:
+    JNI_OnLoad;
+    axvm_dispatch_ex;
+    axvm_register_dispatch;
+    axvm_scan_proc_maps;
+    axvm_rescan_modules;
+    axvm_register_symbol;
+    axvm_prepatch_so_file;
+    axvm_module_load;
+    axvm_module_load_ex;
+    axvm_entry_token;
+    axvm_aapcs64_trampoline;
+    axvm_invoke_native_asm;
+    axvm_got_gate;
+  local:
+    *;
+};

@@ -1,0 +1,33 @@
+# Build outputs
+build/
+build-*/
+build-ndk-arm64/
+*.o
+*.a
+*.so
+*.axbc
+*.exe
+
+# Android / Gradle
+android/.gradle/
+android/**/build/
+android/**/.cxx/
+android/local.properties
+*.apk
+*.aab
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Go
+tools/axpack/stub.o
+tools/go1.22.10/
+tools/go*.zip
+
+# Secrets
+.env
+*.keystore
+credentials.json

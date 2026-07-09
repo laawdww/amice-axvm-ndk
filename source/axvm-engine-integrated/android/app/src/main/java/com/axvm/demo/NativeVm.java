@@ -1,0 +1,70 @@
+package com.axvm.demo;
+
+public class NativeVm {
+    static {
+        System.loadLibrary("axvm");
+    }
+
+    public native int init();
+    public native long vmAdd(long a, long b);
+    public native long nativeAdd(long a, long b);
+    public native long vmBlNativeAdd(long a, long b);
+    public native long vmBenchLoop(int outerRuns);
+    public native int vmDispatchMode();
+    public native int vmStackCryptEnabled();
+    public native long vmStackCryptKeyMix();
+    public native int vmStackDumpProbe();
+    public native double vmFadd(double a, double b);
+    public native int vmLazyEnabled();
+    public native int vmLazyDumpProbe();
+    public native int vmGuardEnabled();
+    public native int vmGuardTripFlags();
+    public native int vmIntegrityEnabled();
+    public native int vmIntegrityTripFlags();
+    public native int vmStrcryptSelftest();
+    public native int vmStrcryptEnabled();
+    public native int vmDynamicSeedEnabled();
+    public native long vmSessionSeedMix();
+    public native int vmJitEnabled();
+    public native long vmJitBenchCompare(int outerRuns);
+    public native int vmChainHashSelftest();
+    public native int vmChainHashTripFlags();
+    public native int vmJniGuardEnabled();
+    public native int vmJniGuardSelftest(byte[] data, String s);
+    public native int vmGotCryptEnabled();
+    public native int vmGotCryptLeakProbe();
+    public native int vmRegPermEnabled();
+    public native int vmRegPermSelftest();
+    public native int vmStrcryptSessionSelftest();
+    public native int vmCryptVariant();
+    public native int vmCryptRoundtripSelftest();
+    public native int vmJunkSelftest();
+    public native int vmMemGuardEnabled();
+    public native int vmMemGuardSelftest();
+    public native int vmEmulatorProbe();
+    public native int vmTimingGuardSelftest();
+    public native int vmStextEnabled();
+    public native int vmStextWipedModules();
+    public native int vmDynsymStripProbe();
+    public native int vmDispatchPermEnabled();
+    public native int vmDispatchPermSelftest();
+    public native int vmHandlerPolyEnabled();
+    public native int vmHandlerPolySelftest();
+    public native int vmLazyPfEnabled();
+    public native int vmLazyPfSelftest();
+    public native int vmGuardSvcEnabled();
+    public native int vmGuardSvcSelftest();
+    public native int vmWatchdogEnabled();
+    public native int vmWatchdogSelftest();
+    public native int vmJitHardenEnabled();
+    public native int vmJitHardenSelftest();
+    public native int vmNestedVmSelftest();
+    public native int vmNestedDepthSelftest();
+    public native int vmJniRegisterNativesActive();
+    public native int vmJniTunnelSelftest(int plain);
+    public native int vmDispatchEngineId();
+    public native int vmRisccSelftest();
+    public native int vmRisccPermEnabled();
+    public native int vmRisccPermSelftest();
+    public native int vmInterpSelftest();
+}

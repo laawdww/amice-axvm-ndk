@@ -1,0 +1,100 @@
+plugins {
+    id "com.android.application"
+}
+
+apply from: "../gradle/axvm-protect.gradle"
+
+// Set axvmProtect { enabled = true ... } to run axpack after mergeNativeLibs (see gradle/axvm-protect.gradle).
+
+android {
+    namespace "com.axvm.demo"
+    compileSdk 34
+    ndkVersion "26.1.10909125"
+
+    defaultConfig {
+        applicationId "com.axvm.demo"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+
+        externalNativeBuild {
+            cmake {
+                // Keep parity with root CMake defaults / protect-and-test-apk.ps1 so the
+                // gradle-built libaxvm.so ships all protection modules enabled instead of
+                // falling back to the debug/plaintext defaults.
+                arguments "-DAXVM_ENABLE_GUARD=ON",
+                        "-DAXVM_USE_COMPUTED_GOTO=ON",
+                        "-DAXVM_STACK_CRYPT=ON",
+                        "-DAXVM_FLOAT_VM=ON",
+                        "-DAXVM_LAZY_DECRYPT=ON",
+                        "-DAXVM_SO_INTEGRITY=ON",
+                        "-DAXVM_DYNAMIC_SEED=ON",
+                        "-DAXVM_STRCRYPT=ON",
+                        "-DAXVM_JIT_CACHE=ON",
+                        "-DAXVM_OPCODE_PERM=ON",
+                        "-DAXVM_REG_PERM=ON",
+                        "-DAXVM_JNI_GUARD=ON",
+                        "-DAXVM_GOT_CRYPT=ON",
+                        "-DAXVM_MEM_GUARD=ON",
+                        "-DAXVM_STEXT=ON",
+                        "-DAXVM_DISPATCH_PERM=ON",
+                        "-DAXVM_HANDLER_POLY=ON",
+                        "-DAXVM_LAZY_PF=ON",
+                        "-DAXVM_SVC_ANTIDEBUG=ON",
+                        "-DAXVM_WATCHDOG=ON",
+                        "-DAXVM_JIT_HARDEN=ON",
+                        "-DAXVM_RISCC_PERM=ON",
+                        "-DAXVM_NESTED_VM=ON",
+                        "-DAXVM_MULTI_ISA=ON"
+            }
+        }
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ["src/main/jniLibs"]
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+        debug {
+            jniDebuggable true
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+            keepDebugSymbols += "**/libvictim.so"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+}
+
+dependencies {
+    implementation "androidx.appcompat:appcompat:1.6.1"
+    implementation "com.google.android.material:material:1.11.0"
+}
