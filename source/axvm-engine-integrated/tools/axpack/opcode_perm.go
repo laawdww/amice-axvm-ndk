@@ -49,6 +49,19 @@ func opOperandLen(op byte) (int, bool) {
 		return 1, true
 	case opCmpImm:
 		return 6, true
+	case opAtomicCas64, opAtomicSwp64, opAtomicLdadd64, opAtomicLdclr64,
+		opAtomicLdeor64, opAtomicLdset64, opAtomicCasp64,
+		opAtomicCas32, opAtomicSwp32, opAtomicLdadd32, opAtomicLdclr32,
+		opAtomicLdeor32, opAtomicLdset32:
+		return 3, true
+	case opAtomicLdxr64, opAtomicLdxr32:
+		return 2, true
+	case opAtomicStxr64, opAtomicStxr32:
+		return 3, true
+	case opAtomicLdxp64:
+		return 3, true
+	case opAtomicStxp64:
+		return 4, true
 	case opMovReg, opMvnReg:
 		return 2, true
 	case opAsrImm:
@@ -73,8 +86,14 @@ func opOperandLen(op byte) (int, bool) {
 		return 0, true
 	case opFldrD, opFstrD, opFldrS, opFstrS, opFldrQ, opFstrQ:
 		return 6, true
-	case opFaddD, opFsubD, opFmulD, opFdivD:
+	case opFaddD, opFsubD, opFmulD, opFdivD, opVadd2D, opVmul2D, opVfma2D, opVadd4S, opVmul4S, opVfma4S:
 		return 3, true
+	case opVdup2D:
+		return 2, true
+	case opUmovD:
+		return 3, true
+	case opInsD:
+		return 4, true
 	case opFcmpD, opFmovDReg, opFmovXBits, opFmovDBits, opFmovDX, opFcvtDS:
 		return 2, true
 	case opFcvtzsD:

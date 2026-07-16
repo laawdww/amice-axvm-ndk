@@ -1,109 +1,259 @@
 /*
- * Gradle hook: run axpack on merged native libs after externalNativeBuild.
+ * AXVM one-click Gradle protect (post mergeNativeLibs).
  *
- * Usage in android/app/build.gradle:
- *
- *   apply from: "../gradle/axvm-protect.gradle"
+ *   apply from: "<path>/android/gradle/axvm-protect.gradle"
  *   axvmProtect {
  *       enabled = true
- *       axpackExe = file("${rootProject.projectDir}/../build/axpack.exe")
- *       libs = ["libvictim.so"]
- *       symbols = "victim_add,victim_mul,victim_check,victim_mixed,victim_fadd,victim_fmul"
- *       wipe = true
- *       encrypt = true
- *       noPatch = true
- *       apkBind = true
- *       packageName = android.defaultConfig.applicationId
- *       apkCertSha256 = "<64-hex>"   // or apkFile = file("path/to.apk")
+ *       libs = ["libfoo.so"]
+ *       diskReady = true
+ *       dep = "-"
  *   }
+ *
+ * Defaults: SingleSo (disk-ready + dep=-), aggressive, degrade, auto-scan.
+ * Disable: -Paxvm.protect=false
+ * Already-packed SOs (AXD1) are skipped when skipIfPacked=true.
  */
 
+def _axvmRepoRoot = {
+    def p = rootProject.projectDir
+    def cands = [
+        new File(p, "../../.."),
+        new File(p, "../.."),
+        new File(p, "../../../.."),
+        new File(System.getenv("AXVM_REPO_ROOT") ?: ".")
+    ]
+    for (File c : cands) {
+        def art = new File(c, "artifacts/axpack.exe")
+        def eng = new File(c, "source/axvm-engine-integrated/build/axpack.exe")
+        if (art.exists() || eng.exists()) return c.canonicalFile
+    }
+    return new File(p, "../../..").canonicalFile
+}()
+
+def _axvmFindAxpack = {
+    def override = project.findProperty("axvm.axpack")
+    if (override) {
+        def f = file(override.toString())
+        if (f.exists()) return f.absolutePath
+    }
+    def cands = [
+        new File(_axvmRepoRoot, "artifacts/axpack.exe"),
+        new File(_axvmRepoRoot, "source/axvm-engine-integrated/build/axpack.exe"),
+        new File(rootProject.projectDir, "../build/axpack.exe"),
+        new File(rootProject.projectDir, "../../artifacts/axpack.exe"),
+    ]
+    for (File c : cands) {
+        if (c.exists()) return c.absolutePath
+    }
+    return new File(_axvmRepoRoot, "artifacts/axpack.exe").absolutePath
+}()
+
 ext.axvmProtect = [
-    enabled       : false,
-    axpackExe     : "${rootProject.projectDir}/../build/axpack.exe",
+    enabled       : (project.findProperty("axvm.protect") ?: "true").toString() == "true",
+    axpackExe     : _axvmFindAxpack,
     libs          : ["libvictim.so"],
     symbols       : "",
+    protectLevel  : "aggressive",
     wipe          : true,
     encrypt       : true,
     noPatch       : true,
-    degrade       : false,
-    skipAtomic    : true,
+    degrade       : true,
+    skipAtomic    : false,
+    diskReady     : true,
+    dep           : "-",
     decoys        : 2,
-    apkBind       : false,
+    stableStub    : false,
+    skipIfPacked  : true,
+    autoScan      : true,
+    apkBind       : (project.findProperty("axvm.apkBind") ?: "false").toString() == "true",
     packageName   : "",
-    apkCertSha256 : "",
-    apkFile       : "",
+    apkCertSha256 : (project.findProperty("axvm.apkCertSha256") ?: "").toString(),
+    apkFile       : (project.findProperty("axvm.apk") ?: "").toString(),
 ]
 
-def axvmProtectClosure = { variant ->
+project.metaClass.axvmProtect = { Closure c ->
     def cfg = project.ext.axvmProtect
-    if (!cfg.enabled) {
-        return
+    def proxy = new Object() {
+        def propertyMissing(String name, Object value) { cfg[name] = value }
+        def propertyMissing(String name) { cfg[name] }
     }
-    def mergeTask = variant.mergeNativeLibsProvider.get()
-    def taskName = "axvmProtect${variant.name.capitalize()}"
-    def protectTask = tasks.register(taskName) {
-        group = "axvm"
-        description = "Run axpack on ${variant.name} merged native libs"
-        dependsOn mergeTask
-        doLast {
-            def axpack = file(cfg.axpackExe)
-            if (!axpack.exists()) {
-                throw new GradleException("axpack not found: ${axpack} (build tools/axpack first)")
-            }
-            if (!cfg.symbols?.trim()) {
-                throw new GradleException("axvmProtect.symbols is required when enabled")
-            }
-            def outDir = mergeTask.outputDir.get().asFile
-            cfg.libs.each { libName ->
-                def inputSo = new File(outDir, libName)
-                if (!inputSo.exists()) {
-                    logger.lifecycle("axvmProtect: skip missing ${inputSo}")
-                    return
-                }
-                def tmpOut = new File(outDir, libName + ".axvm.tmp")
-                def cmd = [axpack.absolutePath,
-                           "-in", inputSo.absolutePath,
-                           "-out", tmpOut.absolutePath,
-                           "-syms", cfg.symbols,
-                           "-decoys", cfg.decoys.toString()]
-                if (cfg.wipe) cmd += "-wipe"
-                if (cfg.encrypt) cmd += "-encrypt"
-                if (cfg.noPatch) cmd += "-no-patch"
-                if (cfg.degrade) cmd += "-degrade"
-                if (cfg.skipAtomic) cmd += "-skip-atomic"
-                if (cfg.apkBind) {
-                    if (!cfg.packageName?.trim()) {
-                        throw new GradleException("axvmProtect.packageName required with apkBind")
-                    }
-                    cmd += ["-apk-bind", "-package", cfg.packageName]
-                    if (cfg.apkCertSha256?.trim()) {
-                        cmd += ["-apk-cert-sha256", cfg.apkCertSha256.trim()]
-                    } else if (cfg.apkFile?.trim()) {
-                        cmd += ["-apk", file(cfg.apkFile).absolutePath]
-                    } else {
-                        throw new GradleException("axvmProtect: apkCertSha256 or apkFile required with apkBind")
-                    }
-                }
-                logger.lifecycle("axvmProtect: ${cmd.join(' ')}")
-                exec {
-                    commandLine cmd
-                    workingDir rootProject.projectDir
-                }
-                if (!tmpOut.exists()) {
-                    throw new GradleException("axpack did not produce ${tmpOut}")
-                }
-                inputSo.delete()
-                if (!tmpOut.renameTo(inputSo)) {
-                    throw new GradleException("failed to replace ${inputSo}")
-                }
-                logger.lifecycle("axvmProtect: replaced ${inputSo}")
-            }
+    c.resolveStrategy = Closure.DELEGATE_ONLY
+    c.delegate = proxy
+    c()
+}
+
+def axvmSoLooksPacked = { File so ->
+    if (!so.exists() || so.length() < 8) return false
+    def bytes = so.bytes
+    byte b0 = 0x41, b1 = 0x58, b2 = 0x44, b3 = 0x31 // AXD1
+    for (int i = Math.max(0, bytes.length - 65536); i + 3 < bytes.length; i++) {
+        if (bytes[i] == b0 && bytes[i+1] == b1 && bytes[i+2] == b2 && bytes[i+3] == b3) return true
+    }
+    int n = Math.min(bytes.length, 256 * 1024)
+    for (int i = 0; i + 3 < n; i++) {
+        if (bytes[i] == b0 && bytes[i+1] == b1 && bytes[i+2] == b2 && bytes[i+3] == b3) return true
+    }
+    return false
+}
+
+ext.axvmRunProtectOnMergedLibs = { String variantName ->
+    def cfg = project.ext.axvmProtect
+    def axpack = file(cfg.axpackExe)
+    if (!axpack.exists()) {
+        throw new GradleException(
+            "axpack not found: ${axpack}\n" +
+            "Place artifacts/axpack.exe or pass -Paxvm.axpack=C:/path/axpack.exe")
+    }
+
+    def searchDirs = []
+    def candidates = [
+        file("${project.buildDir}/intermediates/merged_native_libs/${variantName}/out"),
+        file("${project.buildDir}/intermediates/merged_native_libs/${variantName}/merge${variantName.capitalize()}NativeLibs/out"),
+        file("${project.buildDir}/intermediates/merged_native_libs/${variantName}/merge${variantName.capitalize()}NativeLibs/out/lib"),
+    ]
+    candidates.each { d ->
+        if (d.isDirectory()) {
+            searchDirs << d
+            def abi = new File(d, "arm64-v8a")
+            if (abi.isDirectory()) searchDirs.add(0, abi)
         }
     }
-    mergeTask.finalizedBy(protectTask)
+
+    def libs = (cfg.libs instanceof Collection) ? cfg.libs : [cfg.libs]
+    libs.each { libName ->
+        File inputSo = null
+        for (File d : searchDirs) {
+            def cand = new File(d, libName.toString())
+            if (cand.exists()) { inputSo = cand; break }
+        }
+        if (inputSo == null) {
+            logger.lifecycle("axvmProtect: skip missing ${libName}")
+            return
+        }
+        if (cfg.skipIfPacked && axvmSoLooksPacked(inputSo)) {
+            logger.lifecycle("axvmProtect: already packed, skip ${inputSo}")
+            return
+        }
+
+        def workDir = inputSo.parentFile
+        def report = new File(workDir, libName.toString() + ".axvm-scan.json")
+        def syms = (cfg.symbols ?: "").toString().trim()
+        if (cfg.autoScan || !syms) {
+            logger.lifecycle("axvmProtect: scan ${inputSo}")
+            exec {
+                commandLine axpack.absolutePath, "-in", inputSo.absolutePath,
+                        "-scan", "-report", report.absolutePath
+                workingDir rootProject.projectDir
+            }
+            if (!syms && report.exists()) {
+                def json = new groovy.json.JsonSlurper().parse(report)
+                if (json.suggested_syms) {
+                    syms = json.suggested_syms.toString()
+                    logger.lifecycle("axvmProtect: suggested_syms len=${syms.length()}")
+                }
+            }
+        }
+
+        def tmpOut = new File(workDir, libName.toString() + ".axvm.tmp")
+        def cmd = [axpack.absolutePath,
+                   "-in", inputSo.absolutePath,
+                   "-out", tmpOut.absolutePath,
+                   "-decoys", cfg.decoys.toString(),
+                   "-protect-level", (cfg.protectLevel ?: "aggressive").toString()]
+        if (syms) cmd += ["-syms", syms]
+        if (cfg.wipe) cmd += "-wipe"
+        if (cfg.encrypt) cmd += "-encrypt"
+        if (cfg.noPatch) cmd += "-no-patch"
+        if (cfg.degrade) cmd += "-degrade"
+        if (cfg.skipAtomic) cmd += "-skip-atomic"
+        if (cfg.diskReady) cmd += "-disk-ready"
+        if (cfg.dep != null) cmd += ["-dep", cfg.dep.toString()]
+        if (cfg.stableStub) cmd += "-stable-stub"
+
+        def pkg = (cfg.packageName ?: "").toString().trim()
+        if (!pkg) {
+            try { pkg = android.defaultConfig.applicationId } catch (Throwable ignored) { }
+        }
+        if (cfg.apkBind) {
+            if (!pkg) {
+                throw new GradleException("axvmProtect.packageName / applicationId required with apkBind")
+            }
+            cmd += ["-apk-bind", "-package", pkg]
+            def cert = (cfg.apkCertSha256 ?: "").toString().trim()
+            def apk = (cfg.apkFile ?: "").toString().trim()
+            if (cert) {
+                cmd += ["-apk-cert-sha256", cert]
+            } else if (apk) {
+                cmd += ["-apk", file(apk).absolutePath]
+            } else {
+                throw new GradleException(
+                    "apkBind needs apkCertSha256 or apkFile (or -Paxvm.apkCertSha256=...)")
+            }
+        }
+
+        logger.lifecycle("axvmProtect: ${cmd.join(' ')}")
+        exec {
+            commandLine cmd
+            workingDir rootProject.projectDir
+        }
+        if (!tmpOut.exists()) {
+            throw new GradleException("axpack did not produce ${tmpOut}")
+        }
+        inputSo.delete()
+        if (!tmpOut.renameTo(inputSo)) {
+            throw new GradleException("failed to replace ${inputSo}")
+        }
+        logger.lifecycle("axvmProtect: replaced ${inputSo}")
+    }
 }
 
 afterEvaluate {
-    android.applicationVariants.configureEach(axvmProtectClosure)
+    def cfg = project.ext.axvmProtect
+    if (!cfg.enabled) {
+        logger.lifecycle("axvmProtect: disabled")
+        return
+    }
+
+    def variantNames = []
+    try {
+        if (project.plugins.hasPlugin("com.android.application")) {
+            variantNames = android.applicationVariants.collect { it.name }
+        } else if (project.plugins.hasPlugin("com.android.library")) {
+            variantNames = android.libraryVariants.collect { it.name }
+        }
+    } catch (Throwable t) {
+        variantNames = ["debug", "release"]
+    }
+    if (!variantNames) {
+        variantNames = ["debug", "release"]
+    }
+
+    variantNames.unique().each { String variantName ->
+        def mergeName = "merge${variantName.capitalize()}NativeLibs"
+        def protectName = "axvmProtect${variantName.capitalize()}"
+        tasks.register(protectName) {
+            group = "axvm"
+            description = "One-click axpack on ${variantName} merged native libs"
+            // Lazy string dependency — safe during configuration
+            dependsOn mergeName
+            doLast {
+                project.ext.axvmRunProtectOnMergedLibs(variantName)
+            }
+        }
+    }
+
+    // Attach after graph is known (avoids AGP task-creation context errors)
+    gradle.taskGraph.whenReady { graph ->
+        graph.allTasks.each { t ->
+            if (t.name ==~ /^merge.+NativeLibs$/) {
+                def m = (t.name =~ /^merge(.+)NativeLibs$/)
+                if (m) {
+                    def protectName = "axvmProtect${m[0][1]}"
+                    if (tasks.findByName(protectName) != null) {
+                        t.finalizedBy(protectName)
+                    }
+                }
+            }
+        }
+    }
 }

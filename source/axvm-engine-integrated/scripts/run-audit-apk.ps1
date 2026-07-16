@@ -52,7 +52,8 @@ $Apk = "$Root\android\app\build\outputs\apk\debug\app-debug.apk"
 & $Adb -s $Device install -r $Apk
 & $Adb -s $Device shell am force-stop com.axvm.demo
 & $Adb -s $Device logcat -c
-& $Adb -s $Device shell am start -n com.axvm.demo/.MainActivity
-Start-Sleep -Seconds 4
+& $Adb -s $Device shell am start -W -n com.axvm.demo/.MainActivity
 Write-Host "=== logcat AXVM ==="
-& $Adb -s $Device logcat -d -s AXVM:* AndroidRuntime:E | Select-Object -Last 40
+. (Join-Path $PSScriptRoot "Wait-AxvmLogcat.ps1")
+$log = Wait-AxvmLogcat -Adb $Adb -Device $Device -Pattern "MODULE_|PACK:" -TimeoutSec 60 -ExtraTags @("AndroidRuntime:E")
+$log | Select-Object -Last 40

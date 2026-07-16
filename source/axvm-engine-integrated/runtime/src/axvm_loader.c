@@ -198,42 +198,43 @@ static int pack_valid(const uint8_t *p, size_t len)
         return 0;
     }
     const axvm_pack_hdr_t *hdr = (const axvm_pack_hdr_t *)p;
-    if (!pack_magic_matches(hdr->magic)) {
-        return 0;
-    }
-    if (hdr->version != AXVM_PACK_VERSION &&
-        hdr->version != AXVM_PACK_VERSION_L1 &&
-        hdr->version != AXVM_PACK_VERSION_V2) {
-        return 0;
-    }
-    if (hdr->func_count == 0 || hdr->func_count > AXVM_MAX_FUNCS) {
-        return 0;
-    }
-    if (hdr->table_off < sizeof(axvm_pack_hdr_t) || hdr->table_off >= len) {
-        return 0;
-    }
-    if (hdr->blob_off >= len || hdr->blob_off < hdr->table_off) {
-        return 0;
-    }
-    size_t table_bytes = (size_t)hdr->func_count * pack_rec_stride(hdr);
-    if (hdr->table_off + table_bytes > hdr->blob_off) {
-        return 0;
-    }
-    if (hdr->blob_off + hdr->blob_size > len) {
-        return 0;
-    }
-    /*
-     * 模块 Z：manifest MAC（新增）。checksum==0 兼容历史包；
-     * 非零时必须通过 HMAC 校验，防止 pack table/blob 被离线篡改。
-     */
-    if (hdr->checksum != 0) {
-        uint32_t mac = pack_manifest_mac32(p, len);
-        if (mac == 0 || mac != hdr->checksum) {
-            return 0;
-        }
-    }
-    return 1;
-}
+			if (!pack_magic_matches(hdr->magic)) {
+				return 0;
+			}
+			if (hdr->version != AXVM_PACK_VERSION &&
+				hdr->version != AXVM_PACK_VERSION_L1 &&
+				hdr->version != AXVM_PACK_VERSION_V2) {
+				return 0;
+			}
+			if (hdr->func_count == 0 || hdr->func_count > AXVM_MAX_FUNCS) {
+				return 0;
+			}
+			if (hdr->table_off < sizeof(axvm_pack_hdr_t) || hdr->table_off >= len) {
+				return 0;
+			}
+			if (hdr->blob_off >= len || hdr->blob_off < hdr->table_off) {
+				return 0;
+			}
+			size_t table_bytes = (size_t)hdr->func_count * pack_rec_stride(hdr);
+			if (hdr->table_off + table_bytes > hdr->blob_off) {
+				return 0;
+			}
+			if (hdr->blob_off + hdr->blob_size > len) {
+				return 0;
+			}
+			/*
+			 * 模块 Z：manifest MAC（新增）。checksum==0 兼容历史包；
+			 * 非零时必须通过 HMAC 校验，防止 pack table/blob 被离线篡改。
+			 */
+			if (hdr->checksum != 0) {
+				uint32_t mac = pack_manifest_mac32(p, len);
+				if (mac == 0 || mac != hdr->checksum) {
+					/* decoy 故意错 MAC；真包失败由上层 PACK: FAIL 体现 */
+					return 0;
+				}
+			}
+			return 1;
+		}
 
 static int pack_export_name_trusted(const char *name)
 {
@@ -320,6 +321,8 @@ static int patch_victim_entries(axvm_module_t *mod);
 #if defined(AXVM_DYNAMIC_SEED) && AXVM_DYNAMIC_SEED
 static int load_dynseed_from_file(const char *path);
 #endif
+static int mprotect_text_writable(void *page, size_t len);
+static int mprotect_text_executable(void *page, size_t len);
 
 static int patch_got_slot(uintptr_t got_addr, void *target)
 {
@@ -376,26 +379,35 @@ static void patch_module_gots(axvm_module_t *mod)
 		uintptr_t end_page = ((uintptr_t)slot + 16u + (uintptr_t)page_sz - 1u) &
 							 ~((uintptr_t)page_sz - 1u);
 		size_t prot_len = (size_t)(end_page - page);
-		if (mprotect((void *)page, prot_len, PROT_READ | PROT_WRITE) != 0) {
+		if (!mprotect_text_writable((void *)page, prot_len)) {
 			AXVM_LOGE( "stub mprotect fail %s", r->name);
 			continue;
 		}
         int n;
+        /* Prefer direct BL to dispatch: got_gate absolute MOVZ/BLR has been
+         * implicated in single-SO stack overflows when PLT/GOT pages shift. */
+        n = write_bl_to(slot, dispatch);
+        if (n != 4) {
 #if defined(AXVM_GOT_CRYPT) && AXVM_GOT_CRYPT
-        if (axvm_got_crypt_enabled()) {
-            /* gate 跳板：stub 槽指向 got_gate，真实 dispatch 指针存 RW 加密表 */
-            n = write_stub_call(slot, (void *)(uintptr_t)axvm_got_gate);
-        } else
+            if (axvm_got_crypt_enabled()) {
+                n = write_stub_call(slot, (void *)(uintptr_t)axvm_got_gate);
+            } else
 #endif
-        {
-            n = write_stub_call(slot, dispatch);
+            {
+                n = write_stub_call(slot, dispatch);
+            }
+        } else {
+            /* Keep remaining slot bytes as NOP so fall-through hits epilogue. */
+            uint32_t nop = 0xD503201Fu;
+            for (int pi = 4; pi < 16; pi += 4) {
+                memcpy((uint8_t *)slot + pi, &nop, 4);
+            }
+            n = 16;
         }
         __builtin___clear_cache((char *)slot, (char *)slot + (size_t)n);
-		mprotect((void *)page, prot_len, PROT_READ | PROT_EXEC);
-        AXVM_LOGI( "stub dispatch %s slot=%p -> %s (%d)",
-                            r->name, slot,
-                            axvm_got_crypt_enabled() ? "got_gate" : "direct",
-                            n);
+		(void)mprotect_text_executable((void *)page, prot_len);
+        AXVM_LOGI("stub dispatch %s slot=%p -> %p (%d)",
+                            r->name, slot, dispatch, n);
     }
 }
 
@@ -435,14 +447,14 @@ static void stext_lazy_unlock_module(axvm_module_t *mod)
         if (prot_len == 0) {
             continue;
         }
-        if (mprotect((void *)page_base, prot_len, PROT_READ | PROT_WRITE) != 0) {
+        if (!mprotect_text_writable((void *)page_base, prot_len)) {
             continue;
         }
         if (axvm_stext_decrypt_runtime(tail, tail_len, r->func_id) > 0) {
             mod->stext_unlocked++;
             g_stext_unlock_total++;
         }
-        mprotect((void *)page_base, prot_len, PROT_READ | PROT_EXEC);
+        (void)mprotect_text_executable((void *)page_base, prot_len);
         __builtin___clear_cache((char *)tail, (char *)tail + tail_len);
     }
 }
@@ -547,7 +559,20 @@ void axvm_module_load_ex(const uint8_t *pack, size_t len, void *load_base,
     }
 
 #if defined(AXVM_STEXT) && AXVM_STEXT
-    stext_lazy_unlock_module(mod);
+    /*
+     * disk-ready packs leave wipe tails as plaintext NOPs (no stext crypt).
+     * Decrypting them XOR-corrupts adjacent entries that share a page.
+     * Only unlock when the first protected entry is not already a jump.
+     */
+    {
+        const axvm_func_rec_t *r0 = pack_rec_at(hdr, pack, 0);
+        int disk_ready_jumps = r0 && r0->orig_vaddr != 0 &&
+            text_entry_is_patched((const void *)((uintptr_t)load_base +
+                                                 (uintptr_t)r0->orig_vaddr));
+        if (!disk_ready_jumps) {
+            stext_lazy_unlock_module(mod);
+        }
+    }
 #endif
 }
 
@@ -572,10 +597,17 @@ uint64_t axvm_dispatch_ex(uint32_t func_id,
                           uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7)
 {
+    static int s_depth;
+    if (s_depth > 64) {
+        AXVM_LOGE("dispatch recurse depth=%d id=%u", s_depth, func_id);
+        return 0;
+    }
+    s_depth++;
+    uint64_t ret = 0;
     axvm_func_slot_t *fn = find_func(func_id);
     if (!fn || !fn->bytecode) {
         AXVM_LOGE("dispatch miss id=%u", func_id);
-        return 0;
+        goto out;
     }
 
     if (!fn->ctx) {
@@ -591,7 +623,7 @@ uint64_t axvm_dispatch_ex(uint32_t func_id,
             if (cst != AXVM_OK) {
                 pthread_mutex_unlock(&g_ctx_create_mu);
                 AXVM_LOGE("ctx create fail id=%u st=%d", func_id, (int)cst);
-                return 0;
+                goto out;
             }
             fn->ctx->module_load_base = (uint64_t)(uintptr_t)fn->load_base;
         }
@@ -602,11 +634,12 @@ uint64_t axvm_dispatch_ex(uint32_t func_id,
     axvm_status_t gst = axvm_bridge_enter(fn->ctx);
     if (gst != AXVM_OK) {
         AXVM_LOGE("bridge enter fail id=%u st=%d", func_id, (int)gst);
-        return 0;
+        goto out;
     }
     axvm_ctx_bind_args(fn->ctx, args, 8);
-    uint64_t ret = axvm_invoke(fn->ctx, fn->entry_pc);
-    /* 日志必须在 invoke 之后读 args[]：a0/a1 参数寄存器会被解释器 clobber */
+    ret = axvm_invoke(fn->ctx, fn->entry_pc);
+out:
+    s_depth--;
     return ret;
 }
 
@@ -623,39 +656,12 @@ static int load_pack_from_mapped_segment(void *load_base,
         return 0;
     }
 
-    if (remain > pack_bytes) {
-        long page_sz = sysconf(_SC_PAGESIZE);
-        if (page_sz > 0) {
-            uintptr_t seg_start = (uintptr_t)candidate & ~((uintptr_t)page_sz - 1u);
-            size_t seg_prefix = (size_t)((uintptr_t)candidate - seg_start);
-			size_t copy_sz = (seg_prefix + remain + (size_t)page_sz - 1u) &
-							~((size_t)page_sz - 1u);
-			size_t map_sz = copy_sz + (size_t)page_sz;
-			uint8_t *copy = (uint8_t *)malloc(map_sz);
-			if (copy) {
-				memset(copy, 0, map_sz);
-				memcpy(copy, (const void *)seg_start, copy_sz);
-                void *priv = mmap((void *)seg_start, map_sz,
-                                  PROT_READ | PROT_WRITE,
-                                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
-                                  -1, 0);
-                if (priv != MAP_FAILED) {
-                    memcpy(priv, copy, map_sz);
-                    if (mprotect(priv, map_sz, PROT_READ | PROT_EXEC) == 0) {
-                        __builtin___clear_cache((char *)priv,
-                                                (char *)priv + map_sz);
-                        candidate = (const uint8_t *)priv + seg_prefix;
-                        hdr = (const axvm_pack_hdr_t *)candidate;
-                    } else {
-                        AXVM_LOGE("priv rx mprotect fail errno=%d", errno);
-                    }
-                } else {
-                    AXVM_LOGE("priv mmap fail errno=%d", errno);
-                }
-                free(copy);
-            }
-        }
-    }
+    /*
+     * Do NOT MAP_FIXED-replace the pack/stub PT_LOAD. Extending a private
+     * mapping into the RX→RW hole can cover pages that PLT ADRP still uses
+     * as GOT (e.g. 0x28000), so libc calls branch into stub noise and
+     * stack-overflow. Patch stubs in place on the original file mapping.
+     */
 
     void *stub_exec = NULL;
     uint64_t stub_map_vaddr = 0;
@@ -941,6 +947,21 @@ static int write_token_trampoline(void *from, uint64_t func_vaddr, void *entry, 
     return 12;
 }
 
+/* Prefer RWX while patching: .text pages often share the PLT; a RW-only
+ * window faults on the next PLT call (SEGV_ACCERR / execute non-exec). */
+static int mprotect_text_writable(void *page, size_t len)
+{
+    if (mprotect(page, len, PROT_READ | PROT_WRITE | PROT_EXEC) == 0) {
+        return 1;
+    }
+    return mprotect(page, len, PROT_READ | PROT_WRITE) == 0;
+}
+
+static int mprotect_text_executable(void *page, size_t len)
+{
+    return mprotect(page, len, PROT_READ | PROT_EXEC) == 0;
+}
+
 static int write_jump(void *from, void *to)
 {
     int64_t off = (int64_t)(uintptr_t)to - (int64_t)(uintptr_t)from;
@@ -1046,16 +1067,16 @@ static int patch_text_jump(void *load_base, uint64_t from_vaddr, void *to)
     if (page_sz <= 0) {
         return 0;
     }
-    uintptr_t page = (uintptr_t)from & ~((uintptr_t)page_sz - 1u);
-    if (mprotect((void *)page, (size_t)page_sz, PROT_READ | PROT_WRITE) != 0) {
-        AXVM_LOGE( "text mprotect fail vaddr=0x%llx",
+        uintptr_t page = (uintptr_t)from & ~((uintptr_t)page_sz - 1u);
+        if (!mprotect_text_writable((void *)page, (size_t)page_sz)) {
+            AXVM_LOGE( "text mprotect fail vaddr=0x%llx",
                             (unsigned long long)from_vaddr);
-        return 0;
-    }
+            return 0;
+        }
 
     int n = write_jump(from, to);
     __builtin___clear_cache((char *)from, (char *)from + (size_t)n);
-    mprotect((void *)page, (size_t)page_sz, PROT_READ | PROT_EXEC);
+    (void)mprotect_text_executable((void *)page, (size_t)page_sz);
     AXVM_LOGI( "text patch vaddr=0x%llx -> %p (%d bytes)",
                         (unsigned long long)from_vaddr, to, n);
     return n > 0;
@@ -1335,7 +1356,7 @@ static int patch_victim_entries(axvm_module_t *mod)
             continue;
         }
         uintptr_t page = (uintptr_t)from & ~((uintptr_t)page_sz - 1u);
-        if (mprotect((void *)page, (size_t)page_sz, PROT_READ | PROT_WRITE) != 0) {
+        if (!mprotect_text_writable((void *)page, (size_t)page_sz)) {
             AXVM_LOGW(
                                 "text mprotect skip %s (use dynsym redirect)",
                                 r->name);
@@ -1352,7 +1373,7 @@ static int patch_victim_entries(axvm_module_t *mod)
         }
         if (nwrite <= 0) {
             if (!to) {
-                mprotect((void *)page, (size_t)page_sz, PROT_READ | PROT_EXEC);
+                (void)mprotect_text_executable((void *)page, (size_t)page_sz);
                 continue;
             }
             int64_t off = (int64_t)(uintptr_t)to - (int64_t)(uintptr_t)from;
@@ -1367,11 +1388,11 @@ static int patch_victim_entries(axvm_module_t *mod)
                 nwrite = write_jump(from, to);
                 __builtin___clear_cache((char *)from, (char *)from + (size_t)nwrite);
             } else {
-                mprotect((void *)page, (size_t)page_sz, PROT_READ | PROT_EXEC);
+                (void)mprotect_text_executable((void *)page, (size_t)page_sz);
                 continue;
             }
         }
-        mprotect((void *)page, (size_t)page_sz, PROT_READ | PROT_EXEC);
+        (void)mprotect_text_executable((void *)page, (size_t)page_sz);
         AXVM_LOGI( "text patch %s vaddr=0x%llx -> %s (%d)",
                             r->name, (unsigned long long)r->orig_vaddr,
                             (hdr->flags & AXPK_FLAG_TOKEN) && token_entry ? "token" : "stub",
@@ -1536,16 +1557,12 @@ static int axvm_load_pack_from_file(const char *path, void *load_base)
 
 static int try_load_pack_at(void *load_base, const uint8_t *candidate, size_t remain)
 {
-    if (!pack_trusted(candidate, remain)) {
-        return 0;
-    }
-    const axvm_pack_hdr_t *hdr = (const axvm_pack_hdr_t *)candidate;
-    size_t total = hdr->blob_off + hdr->blob_size;
-    if (total > remain) {
-        return 0;
-    }
-    axvm_module_load(candidate, total, load_base);
-    return 1;
+    /*
+     * Must use the mapped-segment path (stub_exec + patch_victim_entries).
+     * Plain axvm_module_load() registers bytecode but leaves disk-ready stubs
+     * unwired; scan_proc_maps then skips because g_module_count > 0.
+     */
+    return load_pack_from_mapped_segment(load_base, candidate, remain);
 }
 
 static int scan_loaded_segments(void *load_base, const char *tag)
@@ -1630,13 +1647,15 @@ void axvm_register_symbol(void *symbol)
         return;
     }
 
-    if (scan_loaded_segments(info.dli_fbase, "register")) {
 #if defined(AXVM_DYNAMIC_SEED) && AXVM_DYNAMIC_SEED
-        if (info.dli_fname && load_dynseed_from_file(info.dli_fname)) {
-            AXVM_LOGI(
-                                "dynseed master loaded (phdr path) from %s", info.dli_fname);
-        }
+    /* AXDS is past PT_LOAD; load master before decrypting the pack blob. */
+    if (info.dli_fname && info.dli_fname[0] &&
+        load_dynseed_from_file(info.dli_fname)) {
+        AXVM_LOGI("dynseed master loaded (register) from %s", info.dli_fname);
+    }
 #endif
+
+    if (scan_loaded_segments(info.dli_fbase, "register")) {
         return;
     }
 

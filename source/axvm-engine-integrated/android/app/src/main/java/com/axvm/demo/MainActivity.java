@@ -43,6 +43,8 @@ public class MainActivity extends AppCompatActivity {
             long mul = vt.victimMul(6, 7);
             long chkOk = vt.victimCheck(0xDEADBEEFCAFEBABEL);
             long chkBad = vt.victimCheck(0);
+            Log.i(TAG, "victimAdd=" + add + " victimMul=" + mul
+                    + " checkOk=" + chkOk + " checkBad=" + chkBad);
 
             sb.append("victim_add(41,1) = ").append(add).append("\n");
             sb.append("victim_mul(6,7) = ").append(mul).append("\n");

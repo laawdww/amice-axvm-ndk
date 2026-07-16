@@ -113,6 +113,26 @@ func liftFuncWithCache(code []byte, funcAddr uint64, cache *relocCache) ([]byte,
 		off += ch.armSize
 	}
 
+	/*
+	 * FP AAPCS64 返回值在 d0；dispatch/stub 经 x0 位模式传回（FMOV d0,x0）。
+	 * 运算只更新 v[]，RET 读 x[0] — 若不在 RET 前同步，会把首参位模式当返回值
+	 *（MODULE_F：fadd 返回 2.5、fmul 返回 3.0）。
+	 */
+	if fpUsed {
+		for i := range chunks {
+			b := chunks[i].bytes
+			if len(b) == 0 || b[len(b)-1] != opRet {
+				continue
+			}
+			if len(b) >= 4 && b[len(b)-4] == opFmovXBits {
+				continue
+			}
+			nb := append([]byte{}, b[:len(b)-1]...)
+			nb = append(nb, opFmovXBits, 0, 0, opRet)
+			chunks[i].bytes = nb
+		}
+	}
+
 	layout := buildLayout(chunks)
 	patchBranches(chunks, layout)
 

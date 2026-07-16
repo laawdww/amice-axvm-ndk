@@ -10,20 +10,24 @@ import android.util.Log;
 import java.security.MessageDigest;
 
 /**
- * Registers APK package + signing cert with libaxvm before loading apk-bound protected SOs.
- * Safe to call for non-bound SOs (binding is ignored unless AXDS v3 APK_BIND flag is set).
+ * Registers APK package + signing cert before loading apk-bound protected SOs.
+ * Dual-SO: loads {@code libaxvm}. Single-SO: natives already resolved from victim.
  */
 public final class ApkBinding {
     private static final String TAG = "AXVM";
     private static boolean sApplied;
-
-    static {
-        System.loadLibrary("axvm");
-    }
+    private static boolean sLibLoaded;
 
     private ApkBinding() {}
 
+    /** Dual-SO path: ensure libaxvm is loaded then apply binding. */
     public static synchronized void apply(Context context) {
+        ensureAxvmLibrary();
+        applyLoaded(context);
+    }
+
+    /** Single-SO path: victim already loaded; only register binding. */
+    public static synchronized void applyLoaded(Context context) {
         if (sApplied) {
             return;
         }
@@ -40,6 +44,14 @@ public final class ApkBinding {
         } catch (Throwable t) {
             throw new RuntimeException("ApkBinding.apply", t);
         }
+    }
+
+    private static void ensureAxvmLibrary() {
+        if (sLibLoaded || BuildConfig.AXVM_SINGLE_SO) {
+            return;
+        }
+        System.loadLibrary("axvm");
+        sLibLoaded = true;
     }
 
     private static byte[] signingCertSha256(Context context) throws Exception {

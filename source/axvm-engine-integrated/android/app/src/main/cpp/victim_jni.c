@@ -25,6 +25,67 @@ static victim_u64_u64 g_mul;
 static victim_u64     g_check;
 static victim_dd      g_fadd;
 static victim_dd      g_fmul;
+static int g_victim_natives_registered;
+
+static void *victim_dlsym(const char *name)
+{
+    void *sym = NULL;
+    if (g_victim_handle) {
+        sym = dlsym(g_victim_handle, name);
+    }
+    if (!sym) {
+        sym = dlsym(RTLD_DEFAULT, name);
+    }
+    return sym;
+}
+
+static void register_victim_natives(JNIEnv *env)
+{
+    void *fn_prepatch;
+    void *fn_rescan;
+    void *fn_add;
+    void *fn_mul;
+    void *fn_check;
+    void *fn_fadd;
+    void *fn_fmul;
+    jclass cls;
+    JNINativeMethod methods[7];
+
+    if (g_victim_natives_registered || !env) {
+        return;
+    }
+    if (!g_victim_handle) {
+        g_victim_handle = dlopen("libvictim.so", RTLD_NOW | RTLD_NOLOAD);
+    }
+    fn_prepatch = victim_dlsym("Java_com_axvm_demo_VictimTest_nativePrepatch");
+    fn_rescan = victim_dlsym("Java_com_axvm_demo_VictimTest_nativeRescan");
+    fn_add = victim_dlsym("Java_com_axvm_demo_VictimTest_victimAdd");
+    fn_mul = victim_dlsym("Java_com_axvm_demo_VictimTest_victimMul");
+    fn_check = victim_dlsym("Java_com_axvm_demo_VictimTest_victimCheck");
+    fn_fadd = victim_dlsym("Java_com_axvm_demo_VictimTest_victimFadd");
+    fn_fmul = victim_dlsym("Java_com_axvm_demo_VictimTest_victimFmul");
+    if (!fn_prepatch || !fn_rescan || !fn_add || !fn_mul || !fn_check || !fn_fadd || !fn_fmul) {
+        __android_log_print(ANDROID_LOG_ERROR, "AXVM",
+                            "RegisterNatives dlsym miss pre=%p re=%p add=%p mul=%p chk=%p fa=%p fm=%p",
+                            fn_prepatch, fn_rescan, fn_add, fn_mul, fn_check, fn_fadd, fn_fmul);
+        return;
+    }
+    cls = (*env)->FindClass(env, "com/axvm/demo/VictimTest");
+    if (!cls) {
+        return;
+    }
+    methods[0] = (JNINativeMethod){"nativePrepatch", "(Ljava/lang/String;)Z", fn_prepatch};
+    methods[1] = (JNINativeMethod){"nativeRescan", "()V", fn_rescan};
+    methods[2] = (JNINativeMethod){"victimAdd", "(JJ)J", fn_add};
+    methods[3] = (JNINativeMethod){"victimMul", "(JJ)J", fn_mul};
+    methods[4] = (JNINativeMethod){"victimCheck", "(J)J", fn_check};
+    methods[5] = (JNINativeMethod){"victimFadd", "(DD)D", fn_fadd};
+    methods[6] = (JNINativeMethod){"victimFmul", "(DD)D", fn_fmul};
+    if ((*env)->RegisterNatives(env, cls, methods, 7) == 0) {
+        g_victim_natives_registered = 1;
+    }
+    (*env)->DeleteLocalRef(env, cls);
+}
 
 static void resolve_victim(void)
 {
@@ -105,7 +166,6 @@ Java_com_axvm_demo_VictimTest_nativePrepatch(JNIEnv *env, jclass clazz, jstring 
 JNIEXPORT void JNICALL
 Java_com_axvm_demo_VictimTest_nativeRescan(JNIEnv *env, jobject thiz)
 {
-    (void)env;
     (void)thiz;
     void *sym = dlsym(RTLD_DEFAULT, "victim_add");
     if (!sym && g_victim_path[0] != '\0') {
@@ -116,20 +176,31 @@ Java_com_axvm_demo_VictimTest_nativeRescan(JNIEnv *env, jobject thiz)
     }
     if (!sym) {
         void *h = dlopen("libvictim.so", RTLD_NOW | RTLD_NOLOAD);
+        if (!h && g_victim_path[0] != '\0') {
+            h = dlopen(g_victim_path, RTLD_NOW);
+        }
         if (h) {
+            g_victim_handle = h;
             sym = dlsym(h, "victim_add");
         }
     }
     if (sym) {
         axvm_register_symbol(sym);
+    } else {
+        __android_log_print(ANDROID_LOG_ERROR, "AXVM",
+                            "nativeRescan: victim_add not found");
     }
     axvm_scan_proc_maps();
+    register_victim_natives(env);
     g_add = NULL;
     g_mul = NULL;
     g_check = NULL;
     g_fadd = NULL;
     g_fmul = NULL;
     resolve_victim();
+    __android_log_print(ANDROID_LOG_INFO, "AXVM",
+                        "nativeRescan done add=%p check=%p",
+                        (void *)g_add, (void *)g_check);
 }
 
 JNIEXPORT jlong JNICALL

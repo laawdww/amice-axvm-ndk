@@ -8,10 +8,13 @@ include("${AXVM_ROOT}/cmake/AxvmObfuscate.cmake")
 
 add_subdirectory("${AXVM_ROOT}/runtime" axvm_runtime_build)
 
-add_library(axvm SHARED
-    "${AXVM_ROOT}/target/sample/axvm_jni.c"
-    victim_jni.c
-)
+set(_axvm_sources "${AXVM_ROOT}/target/sample/axvm_jni.c")
+# 单 SO 时 Victim/ApkBinding JNI 在 libvictim；libaxvm 保留 NativeVm MODULE_* 自检
+if(NOT AXVM_SINGLE_SO)
+    list(APPEND _axvm_sources victim_jni.c)
+endif()
+
+add_library(axvm SHARED ${_axvm_sources})
 
 target_include_directories(axvm PRIVATE
     "${AXVM_ROOT}/runtime/include"
@@ -43,7 +46,6 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(axvm PRIVATE AXVM_DEBUG=1)
 endif()
 
-# 模块 AA：JNI 参数完整性校验（默认开启；与 root/target CMake 保持一致）
 if(NOT DEFINED AXVM_JNI_GUARD OR AXVM_JNI_GUARD)
     target_compile_definitions(axvm PRIVATE AXVM_JNI_GUARD=1)
 else()
@@ -51,5 +53,3 @@ else()
 endif()
 
 set_target_properties(axvm PROPERTIES OUTPUT_NAME "axvm")
-
-# victim 预编译保护库由 axpack 产出后放入 jniLibs

@@ -10,6 +10,10 @@ func markFP(fpUsed *bool) {
 	}
 }
 
+func matchMasked(word, mask, pattern uint32) bool {
+	return (word & mask) == (pattern & mask)
+}
+
 func emitFpMem(op byte, vt, rn byte, off int32) []byte {
 	return []byte{
 		op, vt, rn,
@@ -45,7 +49,136 @@ func fpImmBits(imm8 uint32, isDouble bool) uint64 {
 
 /* tryDecodeFloatInsn 返回 true 表示已消费该机器指令 */
 func tryDecodeFloatInsn(word uint32, off int, fpUsed *bool) (liftedInsn, bool) {
-	/* LDR Q unsigned (128-bit SIMD) — 拆成两条 LDR D */
+	/* AdvSIMD FADD/FMUL/FMLA 2D — mask 含 don't-care 位，必须用 matchMasked */
+	if matchMasked(word, 0xBFE0FC00, 0x4E60D400) {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		vm := byte((word >> 16) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: emitFpRRR(opVadd2D, vd, vn, vm), armOff: off, armSize: 4}, true
+	}
+	if matchMasked(word, 0xBFE0FC00, 0x6E60DC00) {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		vm := byte((word >> 16) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: emitFpRRR(opVmul2D, vd, vn, vm), armOff: off, armSize: 4}, true
+	}
+	if matchMasked(word, 0xBFE0FC00, 0x4E60CC00) {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		vm := byte((word >> 16) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: emitFpRRR(opVfma2D, vd, vn, vm), armOff: off, armSize: 4}, true
+	}
+	/* AdvSIMD FADD/FMUL/FMLA 4S */
+	if matchMasked(word, 0xBFE0FC00, 0x4E20D400) {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		vm := byte((word >> 16) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: emitFpRRR(opVadd4S, vd, vn, vm), armOff: off, armSize: 4}, true
+	}
+	if matchMasked(word, 0xBFE0FC00, 0x6E20DC00) {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		vm := byte((word >> 16) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: emitFpRRR(opVmul4S, vd, vn, vm), armOff: off, armSize: 4}, true
+	}
+	if matchMasked(word, 0xBFE0FC00, 0x4E20CC00) {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		vm := byte((word >> 16) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: emitFpRRR(opVfma4S, vd, vn, vm), armOff: off, armSize: 4}, true
+	}
+	/* LD1/ST1 {Vt.16B|2D|4S|8H}, [Xn] — opcode=0111，size 任意 */
+	if matchMasked(word, 0xBFFFF000, 0x4C407000) {
+		vt := byte(word & 0x1F)
+		rn := byte((word >> 5) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: emitFpMem(opFldrQ, vt, rn, 0), armOff: off, armSize: 4}, true
+	}
+	if matchMasked(word, 0xBFFFF000, 0x4C007000) {
+		vt := byte(word & 0x1F)
+		rn := byte((word >> 5) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: emitFpMem(opFstrQ, vt, rn, 0), armOff: off, armSize: 4}, true
+	}
+	/* LD1/ST1 {Vt.16B}, [Xn], #16 — post-index */
+	if matchMasked(word, 0xBFFFFC00, 0x4CDF7000) {
+		vt := byte(word & 0x1F)
+		rn := byte((word >> 5) & 0x1F)
+		markFP(fpUsed)
+		bc := emitFpMem(opFldrQ, vt, rn, 0)
+		if rn != 31 {
+			bc = append(bc, opAddImm, rn, rn, 16, 0, 0, 0)
+		}
+		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, true
+	}
+	if matchMasked(word, 0xBFFFFC00, 0x4C9F7000) {
+		vt := byte(word & 0x1F)
+		rn := byte((word >> 5) & 0x1F)
+		markFP(fpUsed)
+		bc := emitFpMem(opFstrQ, vt, rn, 0)
+		if rn != 31 {
+			bc = append(bc, opAddImm, rn, rn, 16, 0, 0, 0)
+		}
+		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, true
+	}
+	/* DUP Vd.2D, Vn.D[0] */
+	if (word & 0xFFFFFC00) == 0x4E010C00 {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: []byte{opVdup2D, vd, vn}, armOff: off, armSize: 4}, true
+	}
+	/* UMOV Xd, Vn.D[idx] — imm5 = 01000 (idx0) / 11000 (idx1) */
+	if (word & 0xFFE0FC00) == 0x4E083C00 {
+		xd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		imm5 := (word >> 16) & 0x1F
+		idx := byte(0)
+		switch imm5 {
+		case 0x08:
+			idx = 0
+		case 0x18:
+			idx = 1
+		default:
+			return liftedInsn{}, false
+		}
+		markFP(fpUsed)
+		return liftedInsn{bytes: []byte{opUmovD, xd, vn, idx}, armOff: off, armSize: 4}, true
+	}
+	/* INS Vd.D[di], Vn.D[si] — 简化：imm5/imm4 编码 D 元素 */
+	if (word & 0xFFE08400) == 0x6E000400 {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		imm5 := (word >> 16) & 0x1F
+		imm4 := (word >> 11) & 0xF
+		var di, si byte
+		switch imm5 {
+		case 0x08:
+			di = 0
+		case 0x18:
+			di = 1
+		default:
+			return liftedInsn{}, false
+		}
+		switch imm4 {
+		case 0x0:
+			si = 0
+		case 0x1:
+			si = 1
+		default:
+			return liftedInsn{}, false
+		}
+		markFP(fpUsed)
+		return liftedInsn{bytes: []byte{opInsD, vd, di, vn, si}, armOff: off, armSize: 4}, true
+	}
+
+	/* LDR Q unsigned (128-bit SIMD) */
 	if (word & 0xBFC00000) == 0x3DC00000 {
 		vt := byte(word & 0x1F)
 		rn := byte((word >> 5) & 0x1F)

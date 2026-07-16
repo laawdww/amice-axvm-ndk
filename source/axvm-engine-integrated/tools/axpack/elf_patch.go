@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 )
 
 const axvmLoadAlign uint64 = 0x4000
@@ -113,7 +114,8 @@ func normalizePhdrOrder(raw []byte) error {
 		}
 	}
 	if phdr == nil {
-		return fmt.Errorf("PT_PHDR missing")
+		/* NDK ET_DYN 常省略 PT_PHDR；仍重排 LOAD，不强制要求 PHDR */
+		fmt.Fprintf(os.Stderr, "axpack: note: input has no PT_PHDR; reordering LOADs only\n")
 	}
 	sort.Slice(loads, func(i, j int) bool {
 		vi := binary.LittleEndian.Uint64(loads[i][16:24])
@@ -122,7 +124,9 @@ func normalizePhdrOrder(raw []byte) error {
 	})
 
 	ordered := make([][]byte, 0, phnum)
-	ordered = append(ordered, phdr)
+	if phdr != nil {
+		ordered = append(ordered, phdr)
+	}
 	ordered = append(ordered, loads...)
 	if dynamic != nil {
 		ordered = append(ordered, dynamic)
@@ -377,7 +381,80 @@ func bumpProgramVaddrs(raw []byte, threshold, delta uint64) error {
 	if err := patchDynamicTags(raw, threshold, delta); err != nil {
 		return err
 	}
-	return patchRelaOffsets(raw, threshold, delta)
+	if err := patchRelaOffsets(raw, threshold, delta); err != nil {
+		return err
+	}
+	if err := patchDynsymValues(raw, threshold, delta); err != nil {
+		return err
+	}
+	/* .text/.plt 里 ADRP 页偏移在链接期已写死；RW 上滑后必须改写，否则 ctor/GOT 仍落进洞 */
+	return patchExecutableAdrpForBump(raw, threshold, delta)
+}
+
+/* ADRP: (insn & 0x9F000000) == 0x90000000 */
+func isADRP(word uint32) bool {
+	return word&0x9F000000 == 0x90000000
+}
+
+func encodeADRP(rd uint32, pc, targetPage uint64) (uint32, error) {
+	page := pc &^ uint64(0xFFF)
+	imm21 := int64(targetPage-page) >> 12
+	if imm21 < -(1<<20) || imm21 >= (1<<20) {
+		return 0, fmt.Errorf("ADRP imm out of range pc=0x%X target=0x%X", pc, targetPage)
+	}
+	immlo := uint32(imm21) & 0x3
+	immhi := (uint32(imm21) >> 2) & 0x7FFFF
+	return (1 << 31) | (immlo << 29) | (0x10 << 24) | (immhi << 5) | (rd & 0x1F), nil
+}
+
+/* 仅扫描 .text/.plt：RX PT_LOAD 还含 .gnu.hash/.dynsym，其 uint32 会误匹配 ADRP 掩码 */
+func patchExecutableAdrpForBump(raw []byte, threshold, delta uint64) error {
+	if delta == 0 {
+		return nil
+	}
+	if delta&0xFFF != 0 {
+		return fmt.Errorf("RW bump delta 0x%X not page-aligned", delta)
+	}
+	thresholdPage := threshold &^ uint64(0xFFF)
+	ef, err := elf.NewFile(bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	patched := 0
+	for _, name := range []string{".text", ".plt"} {
+		sec := ef.Section(name)
+		if sec == nil || sec.Size == 0 {
+			continue
+		}
+		base := int64(sec.Offset)
+		end := base + int64(sec.Size)
+		if end > int64(len(raw)) {
+			end = int64(len(raw))
+		}
+		vaddr0 := sec.Addr
+		for fo := base; fo+4 <= end; fo += 4 {
+			word := binary.LittleEndian.Uint32(raw[fo:])
+			if !isADRP(word) {
+				continue
+			}
+			pc := vaddr0 + uint64(fo-base)
+			target := decodeADRPage(pc, word)
+			if target < thresholdPage {
+				continue
+			}
+			rd := word & 0x1F
+			newWord, err := encodeADRP(rd, pc, target+delta)
+			if err != nil {
+				return err
+			}
+			binary.LittleEndian.PutUint32(raw[fo:], newWord)
+			patched++
+		}
+	}
+	if patched > 0 {
+		fmt.Fprintf(os.Stderr, "axpack: rewritten %d ADRP after RW bump (+0x%X)\n", patched, delta)
+	}
+	return nil
 }
 
 func dynTagIsPointer(tag elf.DynTag) bool {
@@ -385,10 +462,14 @@ func dynTagIsPointer(tag elf.DynTag) bool {
 	case elf.DT_NEEDED, elf.DT_SONAME, elf.DT_RPATH, elf.DT_RUNPATH,
 		elf.DT_FLAGS, elf.DT_FLAGS_1, elf.DT_RELENT, elf.DT_RELAENT,
 		elf.DT_STRSZ, elf.DT_SYMENT, elf.DT_RELSZ, elf.DT_RELASZ,
-		elf.DT_PLTRELSZ, elf.DT_BIND_NOW, elf.DT_INIT_ARRAY, elf.DT_FINI_ARRAY,
-		elf.DT_INIT_ARRAYSZ, elf.DT_FINI_ARRAYSZ, elf.DT_VERNEED, elf.DT_VERNEEDNUM,
-		elf.DT_VERSYM, elf.DT_VERDEF, elf.DT_VERDEFNUM:
+		elf.DT_PLTRELSZ, elf.DT_BIND_NOW,
+		elf.DT_INIT_ARRAYSZ, elf.DT_FINI_ARRAYSZ, elf.DT_PREINIT_ARRAYSZ,
+		elf.DT_VERNEEDNUM, elf.DT_VERDEFNUM:
+		/* 计数/大小/字符串索引 — 非 vaddr */
 		return false
+	case elf.DT_INIT_ARRAY, elf.DT_FINI_ARRAY, elf.DT_PREINIT_ARRAY:
+		/* 指向 RW 内数组的 vaddr — RW bump 必须跟着滑 */
+		return true
 	default:
 		return true
 	}
@@ -418,6 +499,12 @@ func patchDynamicTags(raw []byte, threshold, delta uint64) error {
 	return nil
 }
 
+/* AArch64 relocation types we must slide when RW vaddrs move */
+const (
+	rAarch64Abs64    = 257
+	rAarch64Relative = 1027
+)
+
 func patchRelaOffsets(raw []byte, threshold, delta uint64) error {
 	ef, err := elf.NewFile(bytes.NewReader(raw))
 	if err != nil {
@@ -435,6 +522,41 @@ func patchRelaOffsets(raw []byte, threshold, delta uint64) error {
 			if rOff >= threshold {
 				binary.LittleEndian.PutUint64(raw[off:], rOff+delta)
 			}
+			rInfo := binary.LittleEndian.Uint64(raw[off+8:])
+			rType := uint32(rInfo & 0xffffffff)
+			/* RELATIVE/ABS64 addend 若指向被滑走的 RW，也要 +delta */
+			if rType == rAarch64Relative || rType == rAarch64Abs64 {
+				addend := int64(binary.LittleEndian.Uint64(raw[off+16:]))
+				if addend >= int64(threshold) {
+					binary.LittleEndian.PutUint64(raw[off+16:], uint64(addend+int64(delta)))
+				}
+			}
+		}
+	}
+	return nil
+}
+
+/* 动态符号 st_value 落在 RW 的也要滑，避免 IFUNC/对象地址陈旧 */
+func patchDynsymValues(raw []byte, threshold, delta uint64) error {
+	ef, err := elf.NewFile(bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	sec := ef.Section(".dynsym")
+	if sec == nil || sec.Size == 0 || sec.Entsize == 0 {
+		return nil
+	}
+	entsize := int64(sec.Entsize)
+	if entsize < 24 {
+		entsize = 24
+	}
+	base := int64(sec.Offset)
+	end := base + int64(sec.Size)
+	for off := base; off+entsize <= end; off += entsize {
+		/* Elf64_Sym: st_value at +8 */
+		val := binary.LittleEndian.Uint64(raw[off+8:])
+		if val >= threshold {
+			binary.LittleEndian.PutUint64(raw[off+8:], val+delta)
 		}
 	}
 	return nil
@@ -588,6 +710,10 @@ func collectFuncs(ef *elf.File, raw []byte, targets map[string]bool) ([]fnInfo, 
 		if len(targets) > 0 && !targets[name] {
 			continue
 		}
+		/* aggressive（targets=nil）默认不碰 JNI/嵌入初始化：wipe 会弄断 System.load 后的 Java_* 解析 */
+		if len(targets) == 0 && skipProtectByDefault(name) {
+			continue
+		}
 		if seen[name] {
 			continue
 		}
@@ -610,6 +736,20 @@ func collectFuncs(ef *elf.File, raw []byte, targets map[string]bool) ([]fnInfo, 
 		})
 	}
 	return out, nil
+}
+
+/* JNI 包装、嵌入 runtime、单 SO 构造器必须留 native；业务符号用 -syms 或 aggressive 其余导出 */
+func skipProtectByDefault(name string) bool {
+	if strings.HasPrefix(name, "Java_") || strings.HasPrefix(name, "JNI_") {
+		return true
+	}
+	/* Embedded runtime exports (dispatch/got_gate/invoke_native/…) must stay native.
+	 * Aggressive protect of axvm_got_gate / axvm_invoke_native_asm causes stub→dispatch
+	 * recursion and breaks mul/check/native-call paths. */
+	if strings.HasPrefix(name, "axvm_") {
+		return true
+	}
+	return false
 }
 
 func scanFuncSize(raw []byte, off int64, max int) int {

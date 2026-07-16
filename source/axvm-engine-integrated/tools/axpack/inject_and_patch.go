@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-func injectAndPatch(raw []byte, ef *elf.File, pack, stubs []byte, funcs, nativeLeft []fnInfo, wipe, nativeWipe bool, depLib string, noPhdr, noPatch, noNorm, integrity, dynseed, tokenEntry bool, rawSeed, effectiveMaster []byte, apkBind bool, decoys int, packMagic uint32) ([]byte, error) {
+func injectAndPatch(raw []byte, ef *elf.File, pack, stubs []byte, funcs, nativeLeft []fnInfo, wipe, nativeWipe bool, depLib string, noPhdr, noPatch, noNorm, integrity, dynseed, tokenEntry bool, rawSeed, effectiveMaster []byte, apkBind bool, decoys int, packMagic uint32, diskReady bool) ([]byte, error) {
 	rx, err := rxLoadSeg(ef)
 	if err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ func injectAndPatch(raw []byte, ef *elf.File, pack, stubs []byte, funcs, nativeL
 				tailStart := f.FileOff
 				tailEnd := f.FileOff + int64(f.Size)
 				if tailStart < tailEnd {
-					if len(effectiveMaster) >= 32 {
+					if !diskReady && len(effectiveMaster) >= 32 {
 						tail := out[tailStart:tailEnd]
 						stextCryptRange(tail, effectiveMaster, uint32(i+1))
 					} else {
@@ -118,7 +118,7 @@ func injectAndPatch(raw []byte, ef *elf.File, pack, stubs []byte, funcs, nativeL
 			tailStart := f.FileOff + int64(len(patch))
 			tailEnd := f.FileOff + int64(f.Size)
 			if tailStart < tailEnd {
-				if len(effectiveMaster) >= 32 {
+				if !diskReady && len(effectiveMaster) >= 32 {
 					tail := out[tailStart:tailEnd]
 					stextCryptRange(tail, effectiveMaster, uint32(i+1))
 				} else {
@@ -131,7 +131,7 @@ func injectAndPatch(raw []byte, ef *elf.File, pack, stubs []byte, funcs, nativeL
 	}
 
 	var axnwRecs []nativeWipeRec
-	if nativeWipe && wipe && len(effectiveMaster) >= 32 {
+	if nativeWipe && wipe && !diskReady && len(effectiveMaster) >= 32 {
 		axnwRecs = wipeNativeSymbols(out, nativeLeft, effectiveMaster)
 	}
 

@@ -180,9 +180,9 @@ Demo/E2E 仍默认 `AXVM_DEMO_JNI=ON`（`verify-all.ps1` 需要 NativeVm 自检 
 ## 五、已知限制 / 未做项
 
 - Gradle `protectSo`：**已实现** `android/gradle/axvm-protect.gradle`（默认 `enabled=false`，见 README）。
-- **单 SO 模式**：`-DAXVM_EMBED_RUNTIME=ON` 将 `axvm_runtime` 链入 `libvictim.so` 并在 constructor 登记 dispatch；JNI 仍依赖 `libaxvm.so`（完整单库待集成）。
-- **NEON 128-bit**：LDR/STR Q 已提升为双 LDR/STR D；向量算术/ shuffle 仍待扩展。
-- **原子指令真语义**：默认 `-skip-atomic`；`-no-skip-atomic` 为近似 lift，非 lock-free 安全。
+- **单 SO 模式**：`-DAXVM_EMBED_RUNTIME=ON -DAXVM_SINGLE_SO=ON` 将 runtime + ApkBinding/Prepatch/Victim JNI 链入 `libvictim.so`；配合 axpack `-disk-ready` 可无磁盘 prepatch 直接 `System.load`。Demo 仍可保留 `libaxvm.so` 供 NativeVm 模块自检。
+- **NEON 128-bit**：LDR/STR Q + AdvSIMD `FADD/FMUL/FMLA 2D`、`FADD/FMUL 4S`、`DUP/UMOV/INS` D 元素已提升；结构体 LD1/ST1、shuffle/TBL 等仍待扩展。
+- **原子指令真语义**：默认 lift 为宿主 `__atomic_*` / TLS 独占监视器（LDXR/STXR/CAS/LDADD/…）；`-skip-atomic` 可强制跳过。
 - `tools/go1.22.10/` 为本地便携 Go，勿提交 git。
 - APK Signature Scheme **v4**（`.idsig`）未解析。
 - 诊断日志（`ApkBinding` cert、module crypt）Release 已门控 `BuildConfig.DEBUG`；其余可按需 `AXVM_DEBUG`。

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"debug/elf"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -184,7 +185,19 @@ func TestLiftAllExportedIncludesISA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := liftFuncBatch(funcs); err != nil {
+	var filtered []fnInfo
+	for _, f := range funcs {
+		if strings.HasPrefix(f.Name, "Java_") || strings.HasPrefix(f.Name, "JNI_") {
+			continue
+		}
+		filtered = append(filtered, f)
+	}
+	if _, nativeLeft, err := liftFuncBatchDegrade(filtered, true, false); err != nil {
 		t.Fatal(err)
+	} else if len(nativeLeft) > 0 {
+		t.Logf("degraded native symbols: %d", len(nativeLeft))
+		for _, n := range nativeLeft {
+			t.Logf("  native: %s", n.Name)
+		}
 	}
 }

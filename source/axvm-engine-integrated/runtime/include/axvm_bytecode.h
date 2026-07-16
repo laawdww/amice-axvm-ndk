@@ -92,6 +92,27 @@ typedef enum axvm_opcode {
     AXOP_ZEXT32     = 0x86, /* u8 rd; rd = (uint32_t)rd */
     AXOP_CMP_IMM    = 0x87, /* u8 rn; u8 is32; i32 imm */
 
+    /* 真原子：宿主 __atomic_* / 独占监视器（与 tools/axpack/lift_opc.go 对齐） */
+    AXOP_ATOMIC_CAS64   = 0x88, /* u8 rs(old/expected); u8 rt(new); u8 rn(addr) */
+    AXOP_ATOMIC_SWP64   = 0x89, /* u8 rt(old); u8 rs(new); u8 rn */
+    AXOP_ATOMIC_LDADD64 = 0x8A, /* u8 rt(old); u8 rs(addend); u8 rn */
+    AXOP_ATOMIC_LDCLR64 = 0x8B, /* u8 rt(old); u8 rs(mask); u8 rn */
+    AXOP_ATOMIC_LDEOR64 = 0x8C, /* u8 rt(old); u8 rs(xor); u8 rn */
+    AXOP_ATOMIC_LDSET64 = 0x8D, /* u8 rt(old); u8 rs(bits); u8 rn */
+    AXOP_ATOMIC_LDXR64  = 0x8E, /* u8 rt; u8 rn — load + arm exclusive */
+    AXOP_ATOMIC_STXR64  = 0x8F, /* u8 rs(status); u8 rt; u8 rn */
+    AXOP_ATOMIC_CASP64  = 0x90, /* u8 rs(lo); u8 rt(lo); u8 rn — pair rs/rs+1, rt/rt+1 */
+    AXOP_ATOMIC_STXP64  = 0x99, /* u8 rs(status); u8 rt; u8 rt2; u8 rn */
+    AXOP_ATOMIC_LDXP64  = 0x9A, /* u8 rt; u8 rt2; u8 rn — 128-bit exclusive load */
+    AXOP_ATOMIC_CAS32   = 0x9B,
+    AXOP_ATOMIC_SWP32   = 0x9C,
+    AXOP_ATOMIC_LDADD32 = 0x9D,
+    AXOP_ATOMIC_LDCLR32 = 0x9E,
+    AXOP_ATOMIC_LDEOR32 = 0x9F,
+    AXOP_ATOMIC_LDSET32 = 0xA0,
+    AXOP_ATOMIC_LDXR32  = 0xA1,
+    AXOP_ATOMIC_STXR32  = 0xA2,
+
 #if defined(AXVM_NESTED_VM) && AXVM_NESTED_VM
     /* 模块 R：嵌套 VM 字节码入口/出口 */
     AXOP_VM_ENTER  = 0x62, /* u32 child_off; u8 argc — 子 BC 在 blob 内偏移，参数 x0.. */
@@ -120,6 +141,16 @@ typedef enum axvm_opcode {
     AXOP_FSTR_Q      = 0x81, /* u8 vt; u8 rn; i32 off — 128-bit SIMD store */
     AXOP_SAVE_SCRATCH = 0x82,
     AXOP_RESTORE_SCRATCH = 0x83,
+    /* AdvSIMD 向量算术（2D / 4S） */
+    AXOP_VADD_2D     = 0x91, /* u8 vd; u8 vn; u8 vm */
+    AXOP_VMUL_2D     = 0x92,
+    AXOP_VFMLA_2D    = 0x93, /* vd += vn * vm (2D) */
+    AXOP_VADD_4S     = 0x94,
+    AXOP_VMUL_4S     = 0x95,
+    AXOP_VDUP_2D     = 0x96, /* u8 vd; u8 vn — vn.d[0] -> both lanes */
+    AXOP_UMOV_D      = 0x97, /* u8 xd; u8 vn; u8 idx */
+    AXOP_INS_D       = 0x98, /* u8 vd; u8 vd_idx; u8 vn; u8 vn_idx */
+    AXOP_VFMLA_4S    = 0xA3, /* vd += vn * vm (4S) */
 #endif
 } axvm_opcode_t;
 

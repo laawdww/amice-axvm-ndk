@@ -69,10 +69,25 @@ func liftLoadStorePair(word uint32, off int, store bool, cache *relocCache) (lif
 	opc := (word >> 30) & 0x3
 	elemBytes := int32(8)
 	if isSimd {
-		if opc != 2 {
+		switch opc {
+		case 0:
+			elemBytes = 4
+		case 1:
+			elemBytes = 8
+		case 2:
+			elemBytes = 16
+		default:
 			return liftedInsn{}, unsupportedInsn{off, word, "LDP/STP", "unsupported SIMD pair width"}
 		}
-		elemBytes = 16
+	} else {
+		switch opc {
+		case 0:
+			elemBytes = 4
+		case 2:
+			elemBytes = 8
+		default:
+			return liftedInsn{}, unsupportedInsn{off, word, "LDP/STP", "unsupported GPR pair width"}
+		}
 	}
 	simm := imm7 * elemBytes
 	mode := (word >> 23) & 0x3
@@ -96,9 +111,27 @@ func liftLoadStorePair(word uint32, off int, store bool, cache *relocCache) (lif
 		memOp = opStrU64
 	}
 	if isSimd {
-		memOp = opFldrQ
+		switch opc {
+		case 0: /* S */
+			memOp = opFldrS
+			if store {
+				memOp = opFstrS
+			}
+		case 1: /* D */
+			memOp = opFldrD
+			if store {
+				memOp = opFstrD
+			}
+		case 2: /* Q */
+			memOp = opFldrQ
+			if store {
+				memOp = opFstrQ
+			}
+		}
+	} else if opc == 0 {
+		memOp = opLdrU32
 		if store {
-			memOp = opFstrQ
+			memOp = opStrU32
 		}
 	}
 	if preIdx {
@@ -120,160 +153,221 @@ func liftLoadStorePair(word uint32, off int, store bool, cache *relocCache) (lif
 	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
 }
 
-/* LDXR/LDAXR Xt, [Xn] -> 普通加载语义（不建模独占监视器） */
+/* LDXR/LDAXR Xt, [Xn] — 真独占加载 */
 func liftLdxr(word uint32, off int) (liftedInsn, error) {
 	rt := byte(word & 0x1F)
 	rn := byte((word >> 5) & 0x1F)
 	return liftedInsn{
-		bytes:   emitLdrStrU64(opLdrU64, rt, rn, 0),
+		bytes:   []byte{opAtomicLdxr64, rt, rn},
 		armOff:  off,
 		armSize: 4,
 	}, nil
 }
 
-/* STXR/STLXR Ws, Xt, [Xn] -> 普通存储 + Ws=0（成功） */
+/* LDXR/LDAXR Wt, [Xn] */
+func liftLdxr32(word uint32, off int) (liftedInsn, error) {
+	rt := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	return liftedInsn{
+		bytes:   []byte{opAtomicLdxr32, rt, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
+}
+
+/* STXR/STLXR Ws, Xt, [Xn] — 真独占存储 */
 func liftStxr(word uint32, off int) (liftedInsn, error) {
 	rt := byte(word & 0x1F)
 	rn := byte((word >> 5) & 0x1F)
 	rs := byte((word >> 16) & 0x1F)
-	var bc []byte
-	bc = append(bc, emitLdrStrU64(opStrU64, rt, rn, 0)...)
-	bc = append(bc, emitImm64(rs, 0)...)
 	return liftedInsn{
-		bytes:   bc,
+		bytes:   []byte{opAtomicStxr64, rs, rt, rn},
 		armOff:  off,
 		armSize: 4,
 	}, nil
 }
 
-/* CAS/CASA/CASL/CASAL Xs, Xt, [Xn] -> 比较交换语义近似 */
+func liftStxr32(word uint32, off int) (liftedInsn, error) {
+	rt := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	rs := byte((word >> 16) & 0x1F)
+	return liftedInsn{
+		bytes:   []byte{opAtomicStxr32, rs, rt, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
+}
+
+/* CAS — 宿主 atomic compare-exchange */
 func liftCas(word uint32, off int) (liftedInsn, error) {
 	rt := byte(word & 0x1F)         /* new */
 	rn := byte((word >> 5) & 0x1F)  /* addr */
 	rs := byte((word >> 16) & 0x1F) /* expected + return old */
-
-	var bc []byte
-	/* old = [rn] */
-	bc = append(bc, emitLdrStrU64(opLdrU64, scratchReg0, rn, 0)...)
-	/* if old==rs then write rt else write old */
-	bc = append(bc, []byte{opCmpReg, scratchReg0, rs}...)
-	bc = append(bc, []byte{opCselReg, scratchReg1, rt, scratchReg0, 0}...) /* EQ=0 */
-	bc = append(bc, emitLdrStrU64(opStrU64, scratchReg1, rn, 0)...)
-	/* rs gets old value */
-	bc = append(bc, []byte{opMovReg, rs, scratchReg0}...)
-	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+	return liftedInsn{
+		bytes:   []byte{opAtomicCas64, rs, rt, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
 }
 
-/* LDADD/LDADDA/LDADDL/LDADDAL Xs, Xt, [Xn] -> 原子加语义近似 */
+func liftCas32(word uint32, off int) (liftedInsn, error) {
+	rt := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	rs := byte((word >> 16) & 0x1F)
+	return liftedInsn{
+		bytes:   []byte{opAtomicCas32, rs, rt, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
+}
+
+/* LDADD — 宿主 atomic fetch-add */
 func liftLdadd(word uint32, off int) (liftedInsn, error) {
 	rt := byte(word & 0x1F)         /* return old */
 	rn := byte((word >> 5) & 0x1F)  /* addr */
 	rs := byte((word >> 16) & 0x1F) /* addend */
+	return liftedInsn{
+		bytes:   []byte{opAtomicLdadd64, rt, rs, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
+}
 
-	var bc []byte
-	bc = append(bc, emitLdrStrU64(opLdrU64, scratchReg0, rn, 0)...)
-	bc = append(bc, []byte{opAddReg, scratchReg1, scratchReg0, rs}...)
-	bc = append(bc, emitLdrStrU64(opStrU64, scratchReg1, rn, 0)...)
-	bc = append(bc, []byte{opMovReg, rt, scratchReg0}...)
-	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+func liftLdadd32(word uint32, off int) (liftedInsn, error) {
+	rt := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	rs := byte((word >> 16) & 0x1F)
+	return liftedInsn{
+		bytes:   []byte{opAtomicLdadd32, rt, rs, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
 }
 
 func liftLdclr(word uint32, off int) (liftedInsn, error) {
-	rt := byte(word & 0x1F)         /* return old */
-	rn := byte((word >> 5) & 0x1F)  /* addr */
-	rs := byte((word >> 16) & 0x1F) /* mask */
+	rt := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	rs := byte((word >> 16) & 0x1F)
+	return liftedInsn{
+		bytes:   []byte{opAtomicLdclr64, rt, rs, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
+}
 
-	var bc []byte
-	bc = append(bc, emitLdrStrU64(opLdrU64, scratchReg0, rn, 0)...)
-	bc = append(bc, []byte{opMvnReg, scratchReg1, rs}...)
-	bc = append(bc, []byte{opAndReg, scratchReg1, scratchReg0, scratchReg1}...)
-	bc = append(bc, emitLdrStrU64(opStrU64, scratchReg1, rn, 0)...)
-	bc = append(bc, []byte{opMovReg, rt, scratchReg0}...)
-	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+func liftLdclr32(word uint32, off int) (liftedInsn, error) {
+	rt := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	rs := byte((word >> 16) & 0x1F)
+	return liftedInsn{
+		bytes:   []byte{opAtomicLdclr32, rt, rs, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
 }
 
 func liftLdset(word uint32, off int) (liftedInsn, error) {
-	rt := byte(word & 0x1F)         /* return old */
-	rn := byte((word >> 5) & 0x1F)  /* addr */
-	rs := byte((word >> 16) & 0x1F) /* bits */
+	rt := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	rs := byte((word >> 16) & 0x1F)
+	return liftedInsn{
+		bytes:   []byte{opAtomicLdset64, rt, rs, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
+}
 
-	var bc []byte
-	bc = append(bc, emitLdrStrU64(opLdrU64, scratchReg0, rn, 0)...)
-	bc = append(bc, []byte{opOrrReg, scratchReg1, scratchReg0, rs}...)
-	bc = append(bc, emitLdrStrU64(opStrU64, scratchReg1, rn, 0)...)
-	bc = append(bc, []byte{opMovReg, rt, scratchReg0}...)
-	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+func liftLdset32(word uint32, off int) (liftedInsn, error) {
+	rt := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	rs := byte((word >> 16) & 0x1F)
+	return liftedInsn{
+		bytes:   []byte{opAtomicLdset32, rt, rs, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
 }
 
 func liftLdeor(word uint32, off int) (liftedInsn, error) {
-	rt := byte(word & 0x1F)         /* return old */
-	rn := byte((word >> 5) & 0x1F)  /* addr */
-	rs := byte((word >> 16) & 0x1F) /* xor value */
+	rt := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	rs := byte((word >> 16) & 0x1F)
+	return liftedInsn{
+		bytes:   []byte{opAtomicLdeor64, rt, rs, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
+}
 
-	var bc []byte
-	bc = append(bc, emitLdrStrU64(opLdrU64, scratchReg0, rn, 0)...)
-	bc = append(bc, []byte{opEorReg, scratchReg1, scratchReg0, rs}...)
-	bc = append(bc, emitLdrStrU64(opStrU64, scratchReg1, rn, 0)...)
-	bc = append(bc, []byte{opMovReg, rt, scratchReg0}...)
-	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+func liftLdeor32(word uint32, off int) (liftedInsn, error) {
+	rt := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	rs := byte((word >> 16) & 0x1F)
+	return liftedInsn{
+		bytes:   []byte{opAtomicLdeor32, rt, rs, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
 }
 
 func liftSwp(word uint32, off int) (liftedInsn, error) {
-	rt := byte(word & 0x1F)         /* return old */
-	rn := byte((word >> 5) & 0x1F)  /* addr */
-	rs := byte((word >> 16) & 0x1F) /* new value */
-
-	var bc []byte
-	bc = append(bc, emitLdrStrU64(opLdrU64, scratchReg0, rn, 0)...)
-	bc = append(bc, emitLdrStrU64(opStrU64, rs, rn, 0)...)
-	bc = append(bc, []byte{opMovReg, rt, scratchReg0}...)
-	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+	rt := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	rs := byte((word >> 16) & 0x1F)
+	return liftedInsn{
+		bytes:   []byte{opAtomicSwp64, rt, rs, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
 }
 
-/* LDXP/LDAXP Xt1, Xt2, [Xn] */
+func liftSwp32(word uint32, off int) (liftedInsn, error) {
+	rt := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	rs := byte((word >> 16) & 0x1F)
+	return liftedInsn{
+		bytes:   []byte{opAtomicSwp32, rt, rs, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
+}
+
+/* LDXP/LDAXP — 128-bit 独占加载 */
 func liftLdxp(word uint32, off int) (liftedInsn, error) {
 	rt := byte(word & 0x1F)
 	rn := byte((word >> 5) & 0x1F)
 	rt2 := byte((word >> 10) & 0x1F)
-	var bc []byte
-	bc = append(bc, emitLdrStrU64(opLdrU64, rt, rn, 0)...)
-	bc = append(bc, emitLdrStrU64(opLdrU64, rt2, rn, 8)...)
-	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+	return liftedInsn{
+		bytes:   []byte{opAtomicLdxp64, rt, rt2, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
 }
 
-/* STXP/STLXP Ws, Xt1, Xt2, [Xn] */
+/* STXP — 独占双字：监视有效则写低+高字，否则仅置失败状态 */
 func liftStxp(word uint32, off int) (liftedInsn, error) {
 	rt := byte(word & 0x1F)
 	rn := byte((word >> 5) & 0x1F)
 	rt2 := byte((word >> 10) & 0x1F)
 	rs := byte((word >> 16) & 0x1F)
-	var bc []byte
-	bc = append(bc, emitLdrStrU64(opStrU64, rt, rn, 0)...)
-	bc = append(bc, emitLdrStrU64(opStrU64, rt2, rn, 8)...)
-	bc = append(bc, emitImm64(rs, 0)...)
-	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+	/* opAtomicStxp64: rs, rt, rt2, rn */
+	return liftedInsn{
+		bytes:   []byte{opAtomicStxp64, rs, rt, rt2, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
 }
 
-/* CASP/CASPA/CASPL/CASPAL Xs, Xs+1, Xt, Xt+1, [Xn] */
+/* CASP — 128-bit 宿主 atomic CAS */
 func liftCasp(word uint32, off int) (liftedInsn, error) {
 	rt := byte(word & 0x1F)         /* new low */
 	rn := byte((word >> 5) & 0x1F)  /* addr */
 	rs := byte((word >> 16) & 0x1F) /* expected low / return old low */
-	rt2 := rt + 1
-	rs2 := rs + 1
-
-	var bc []byte
-	bc = append(bc, emitLdrStrU64(opLdrU64, scratchReg0, rn, 0)...)
-	bc = append(bc, emitLdrStrU64(opLdrU64, scratchReg1, rn, 8)...)
-	bc = append(bc, []byte{opCmpReg, scratchReg0, rs}...)
-	bc = append(bc, []byte{opCselReg, 14, rt, scratchReg0, 0}...)
-	bc = append(bc, []byte{opCmpReg, scratchReg1, rs2}...)
-	bc = append(bc, []byte{opCselReg, 15, rt2, scratchReg1, 0}...)
-	bc = append(bc, emitLdrStrU64(opStrU64, 14, rn, 0)...)
-	bc = append(bc, emitLdrStrU64(opStrU64, 15, rn, 8)...)
-	bc = append(bc, []byte{opMovReg, rs, scratchReg0}...)
-	bc = append(bc, []byte{opMovReg, rs2, scratchReg1}...)
-	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+	return liftedInsn{
+		bytes:   []byte{opAtomicCasp64, rs, rt, rn},
+		armOff:  off,
+		armSize: 4,
+	}, nil
 }
 
 /* 用于测试：单条机器码提升 */

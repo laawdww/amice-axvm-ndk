@@ -22,9 +22,10 @@ try {
     & $Adb install -r $Apk
     & $Adb shell am force-stop com.axvm.demo
     & $Adb logcat -c
-    & $Adb shell am start -n com.axvm.demo/.MainActivity
-    Start-Sleep -Seconds 2
-    & $Adb logcat -d -s AXVM:* | Select-Object -Last 10
+    & $Adb shell am start -W -n com.axvm.demo/.MainActivity
+    . (Join-Path $PSScriptRoot "Wait-AxvmLogcat.ps1")
+    $log = Wait-AxvmLogcat -Adb $Adb -Pattern "MODULE_|PACK:" -TimeoutSec 60
+    $log | Select-Object -Last 10
 } finally {
     Pop-Location
 }

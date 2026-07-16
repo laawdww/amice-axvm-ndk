@@ -6,6 +6,19 @@ ARM64 native SO virtualizer for Android (NDK `arm64-v8a`).
 - **Packer** (`tools/axpack/`): ELF lifter, EOF pack, stub trampoline, encrypt / wipe / apk-bind
 - **Demo** (`android/`, `samples/victim/`): APK + protected victim SO E2E
 
+## NDK one-click
+
+Repo root `protect-ndk.ps1` (also `scripts/protect-ndk.ps1`):
+
+```powershell
+# SO in → protected SO out (SingleSo defaults)
+..\..\..\protect-ndk.ps1 -In libfoo.so -Out libfoo.axvm.so -Package com.example.app -Apk app.apk
+```
+
+Gradle: `android/gradle/axvm-protect.gradle` (demo defaults ON; `-Paxvm.protect=false` to disable).
+
+CMake: `include(cmake/AxvmProtect.cmake)` then `axvm_ndk_protect(mylib ...)`.
+
 Detailed P1 feature list and fixes: [`docs/P1-FEATURES-AND-FIXES.md`](docs/P1-FEATURES-AND-FIXES.md).
 
 ## Prerequisites

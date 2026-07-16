@@ -4,12 +4,10 @@ plugins {
 
 apply from: "../gradle/axvm-protect.gradle"
 
-// Set axvmProtect { enabled = true ... } to run axpack after mergeNativeLibs (see gradle/axvm-protect.gradle).
-
 android {
     namespace "com.axvm.demo"
-    compileSdk 34
-    ndkVersion "26.1.10909125"
+    compileSdk 36
+    ndkVersion "21.3.6528147"
 
     defaultConfig {
         applicationId "com.axvm.demo"
@@ -17,6 +15,9 @@ android {
         targetSdk 34
         versionCode 1
         versionName "1.0"
+
+        buildConfigField "boolean", "AXVM_SINGLE_SO",
+                (project.findProperty("AXVM_SINGLE_SO") ?: "false").toString()
 
         ndk {
             abiFilters "arm64-v8a"
@@ -27,6 +28,7 @@ android {
                 // Keep parity with root CMake defaults / protect-and-test-apk.ps1 so the
                 // gradle-built libaxvm.so ships all protection modules enabled instead of
                 // falling back to the debug/plaintext defaults.
+                def singleSo = (project.findProperty("AXVM_SINGLE_SO") ?: "false").toString()
                 arguments "-DAXVM_ENABLE_GUARD=ON",
                         "-DAXVM_USE_COMPUTED_GOTO=ON",
                         "-DAXVM_STACK_CRYPT=ON",
@@ -50,7 +52,8 @@ android {
                         "-DAXVM_JIT_HARDEN=ON",
                         "-DAXVM_RISCC_PERM=ON",
                         "-DAXVM_NESTED_VM=ON",
-                        "-DAXVM_MULTI_ISA=ON"
+                        "-DAXVM_MULTI_ISA=ON",
+                        "-DAXVM_SINGLE_SO=${singleSo}"
             }
         }
     }
@@ -92,6 +95,24 @@ android {
     buildFeatures {
         buildConfig true
     }
+}
+
+// One-click protect after mergeNativeLibs (default ON; skip if already packed).
+// Disable: gradlew assembleDebug -Paxvm.protect=false
+def _axvmProtectOn = (findProperty("axvm.protect") ?: "true").toString() == "true"
+def _axvmApkBind = (findProperty("axvm.apkBind") ?: "false").toString() == "true"
+axvmProtect {
+    enabled = _axvmProtectOn
+    libs = ["libvictim.so"]
+    protectLevel = "aggressive"
+    diskReady = true
+    dep = "-"
+    degrade = true
+    skipAtomic = false
+    skipIfPacked = true
+    autoScan = true
+    apkBind = _axvmApkBind
+    packageName = "com.axvm.demo"
 }
 
 dependencies {

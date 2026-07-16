@@ -31,6 +31,7 @@ option(AXVM_NESTED_VM "Nested VM ctx hierarchy (module R)" ON)
 option(AXVM_MULTI_ISA "Multi-ISA engine dispatch (module T)" ON)
 option(AXVM_OLLVM "AMICE/OLLVM compile-time obfuscation (requires AMICE_PLUGIN bundle)" OFF)
 option(AXVM_EMBED_RUNTIME "Statically link axvm_runtime into libvictim.so (single-SO init)" OFF)
+option(AXVM_SINGLE_SO "Embed runtime+JNI into libvictim (requires AXVM_EMBED_RUNTIME)" OFF)
 option(AXVM_DEMO_JNI "Register demo NativeVm/VictimTest JNI + module selftests (OFF for delivery libaxvm.so)" ON)
 
 if(AXVM_OPCODE_PERM AND NOT AXVM_DYNAMIC_SEED)

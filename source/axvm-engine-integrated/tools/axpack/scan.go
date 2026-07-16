@@ -81,7 +81,7 @@ func runScan(inPath string, ef *elf.File, raw []byte, targets map[string]bool, r
 			for _, ah := range atomicHits {
 				sr.AtomicHits = append(sr.AtomicHits, scanAtomicHit{Offset: ah.Offset, Family: ah.Family})
 			}
-			rep.UnsupportedByMnemo["ATOMIC_APPROX"] += len(atomicHits)
+			rep.UnsupportedByMnemo["ATOMIC"] += len(atomicHits)
 			rep.AtomicApproxCount++
 		}
 
@@ -200,7 +200,7 @@ func printScanText(rep scanReport) {
 	}
 	for _, s := range rep.Symbols {
 		if s.AtomicApprox {
-			fmt.Fprintf(os.Stderr, "WARN: %s ATOMIC_APPROX (%d insns) — lift is not thread-safe\n",
+			fmt.Fprintf(os.Stderr, "NOTE: %s has %d atomic insn(s) — host __atomic / exclusive monitor\n",
 				s.Name, s.AtomicCount)
 		}
 		status := "OK"
@@ -211,7 +211,7 @@ func printScanText(rep scanReport) {
 		}
 		fmt.Fprintf(&b, "  [%s] %s @%s size=%d insns=%d prio=%d", status, s.Name, s.Addr, s.Size, s.InsnWords, s.Priority)
 		if s.AtomicApprox {
-			fmt.Fprintf(&b, " atomic_approx=%d", s.AtomicCount)
+			fmt.Fprintf(&b, " atomic=%d", s.AtomicCount)
 		}
 		if s.UnsupportedCount > 0 {
 			fmt.Fprintf(&b, " unsupported=%d", s.UnsupportedCount)

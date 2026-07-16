@@ -70,8 +70,9 @@ func main() {
 	degrade := flag.Bool("degrade", true, "skip symbols that fail lift instead of aborting")
 	nativeWipe := flag.Bool("native-wipe", true, "with -degrade, stext-encrypt symbols left native (needs -wipe -dynseed)")
 	noNativeWipe := flag.Bool("no-native-wipe", false, "disable native symbol body encryption")
-	skipAtomic := flag.Bool("skip-atomic", true, "with -degrade, skip symbols containing ATOMIC_APPROX insns")
-	noSkipAtomic := flag.Bool("no-skip-atomic", false, "lift atomic symbols even when -degrade (unsafe for lock-free code)")
+	skipAtomic := flag.Bool("skip-atomic", false, "with -degrade, skip symbols containing atomic insns (default: lift with true host atomics)")
+	noSkipAtomic := flag.Bool("no-skip-atomic", false, "force-lift atomic symbols (default behavior; kept for compatibility)")
+	diskReady := flag.Bool("disk-ready", false, "leave .text tails plaintext (NOP/wipe without stext crypt) so SO loads without runtime prepatch — single-SO mode")
 	apkBind := flag.Bool("apk-bind", false, "bind MasterSeed to -package + APK signing cert (AXDS v3)")
 	apkPath := flag.String("apk", "", "APK path to read signing cert SHA-256 (with -apk-bind)")
 	apkPackage := flag.String("package", "", "Android applicationId for -apk-bind")
@@ -85,6 +86,15 @@ func main() {
 	stripTool := flag.String("strip-tool", "", "path to llvm-strip/strip for -strip")
 	flag.Parse()
 	stableStubPrologue = *stableStub
+	/*
+	 * disk-ready（Android 单 SO）经 JNI 薄包装调入 stub：部分 prologue 变体
+	 *（LDP reload 等）在 PAC 机型上会读到错误的 x0/x1，表现为 add 返回垃圾。
+	 * 强制 classic 参数整理；布局尺寸多样性仍保留。
+	 */
+	if *diskReady && !*stableStub {
+		stableStubPrologue = true
+		fmt.Fprintf(os.Stderr, "axpack: note: -disk-ready enables stable stub prologues (PAC/JNI safe)\n")
+	}
 
 	if *printApkCert != "" {
 		cert, info, err := apkSigningCertInfo(*printApkCert)
@@ -221,7 +231,7 @@ func main() {
 		binary.LittleEndian.PutUint32(pack[8:12], flags|axpkToken)
 		sealPackManifestMAC(pack)
 	}
-	outData, err := injectAndPatch(raw, ef, pack, stubs, funcs, nativeLeft, *wipe, doNativeWipe, *dep, *noPhdr, *noPatch, *noNorm, *integrity, *dynseed, *tokenEntry, rawSeed, master, useApkBind, *decoys, packMagic)
+	outData, err := injectAndPatch(raw, ef, pack, stubs, funcs, nativeLeft, *wipe, doNativeWipe, *dep, *noPhdr, *noPatch, *noNorm, *integrity, *dynseed, *tokenEntry, rawSeed, master, useApkBind, *decoys, packMagic, *diskReady)
 	if err != nil {
 		fatal("pack: %v", err)
 	}

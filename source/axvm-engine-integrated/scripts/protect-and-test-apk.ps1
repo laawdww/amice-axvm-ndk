@@ -73,5 +73,6 @@ $Apk = "$Root\android\app\build\outputs\apk\debug\app-debug.apk"
 & $Adb shell pm clear com.axvm.demo
 & $Adb logcat -c
 & $Adb shell am start -W -n com.axvm.demo/.MainActivity
-Start-Sleep -Seconds 8
-& $Adb logcat -d -s AXVM 2>&1 | Select-String -Pattern "PACK:|scan skip|prepatch"
+. (Join-Path $PSScriptRoot "Wait-AxvmLogcat.ps1")
+$log = Wait-AxvmLogcat -Adb $Adb -Pattern "PACK:" -TimeoutSec 60
+$log | Select-String -Pattern "PACK:|scan skip|prepatch"

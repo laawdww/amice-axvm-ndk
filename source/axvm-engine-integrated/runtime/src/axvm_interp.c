@@ -6,6 +6,8 @@
 
 #include "axvm_freg.h"
 
+#include "axvm_excl.h"
+
 #include "axvm_bridge.h"
 #include "axvm_guard.h"
 #include "axvm_integrity.h"
@@ -842,6 +844,26 @@ static axvm_status_t axvm_run_impl(axvm_ctx_t *ctx)
         [AXOP_ZEXT32] = &&op_zext32,
         [AXOP_CMP_IMM] = &&op_cmp_imm,
 
+        [AXOP_ATOMIC_CAS64]   = &&op_atomic_cas64,
+        [AXOP_ATOMIC_SWP64]   = &&op_atomic_swp64,
+        [AXOP_ATOMIC_LDADD64] = &&op_atomic_ldadd64,
+        [AXOP_ATOMIC_LDCLR64] = &&op_atomic_ldclr64,
+        [AXOP_ATOMIC_LDEOR64] = &&op_atomic_ldeor64,
+        [AXOP_ATOMIC_LDSET64] = &&op_atomic_ldset64,
+        [AXOP_ATOMIC_LDXR64]  = &&op_atomic_ldxr64,
+        [AXOP_ATOMIC_STXR64]  = &&op_atomic_stxr64,
+        [AXOP_ATOMIC_CASP64]  = &&op_atomic_casp64,
+        [AXOP_ATOMIC_STXP64]  = &&op_atomic_stxp64,
+        [AXOP_ATOMIC_LDXP64]  = &&op_atomic_ldxp64,
+        [AXOP_ATOMIC_CAS32]   = &&op_atomic_cas32,
+        [AXOP_ATOMIC_SWP32]   = &&op_atomic_swp32,
+        [AXOP_ATOMIC_LDADD32] = &&op_atomic_ldadd32,
+        [AXOP_ATOMIC_LDCLR32] = &&op_atomic_ldclr32,
+        [AXOP_ATOMIC_LDEOR32] = &&op_atomic_ldeor32,
+        [AXOP_ATOMIC_LDSET32] = &&op_atomic_ldset32,
+        [AXOP_ATOMIC_LDXR32]  = &&op_atomic_ldxr32,
+        [AXOP_ATOMIC_STXR32]  = &&op_atomic_stxr32,
+
 #if defined(AXVM_NESTED_VM) && AXVM_NESTED_VM
         [AXOP_VM_ENTER]  = &&op_vm_enter,
         [AXOP_VM_LEAVE]  = &&op_vm_leave,
@@ -867,6 +889,15 @@ static axvm_status_t axvm_run_impl(axvm_ctx_t *ctx)
         [AXOP_FCVTZS_D]    = &&op_fcvtzs_d,
         [AXOP_SAVE_SCRATCH] = &&op_save_scratch,
         [AXOP_RESTORE_SCRATCH] = &&op_restore_scratch,
+        [AXOP_VADD_2D]  = &&op_vadd_2d,
+        [AXOP_VMUL_2D]  = &&op_vmul_2d,
+        [AXOP_VFMLA_2D] = &&op_vfma_2d,
+        [AXOP_VADD_4S]  = &&op_vadd_4s,
+        [AXOP_VMUL_4S]  = &&op_vmul_4s,
+        [AXOP_VFMLA_4S] = &&op_vfma_4s,
+        [AXOP_VDUP_2D]  = &&op_vdup_2d,
+        [AXOP_UMOV_D]   = &&op_umov_d,
+        [AXOP_INS_D]    = &&op_ins_d,
 #endif
         [AXOP_JUNK]        = &&op_junk,
 

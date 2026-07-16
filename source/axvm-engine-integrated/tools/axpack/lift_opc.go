@@ -70,6 +70,38 @@ const (
 	opZext32         = 0x86
 	opCmpImm         = 0x87
 
+	/* 真原子 opcode（宿主 __atomic / exclusive monitor） */
+	opAtomicCas64   = 0x88
+	opAtomicSwp64   = 0x89
+	opAtomicLdadd64 = 0x8A
+	opAtomicLdclr64 = 0x8B
+	opAtomicLdeor64 = 0x8C
+	opAtomicLdset64 = 0x8D
+	opAtomicLdxr64  = 0x8E
+	opAtomicStxr64  = 0x8F
+	opAtomicCasp64  = 0x90
+	opAtomicStxp64  = 0x99 /* u8 rs; u8 rt; u8 rt2; u8 rn */
+	opAtomicLdxp64  = 0x9A /* u8 rt; u8 rt2; u8 rn — 128-bit exclusive load */
+	opAtomicCas32   = 0x9B
+	opAtomicSwp32   = 0x9C
+	opAtomicLdadd32 = 0x9D
+	opAtomicLdclr32 = 0x9E
+	opAtomicLdeor32 = 0x9F
+	opAtomicLdset32 = 0xA0
+	opAtomicLdxr32  = 0xA1
+	opAtomicStxr32  = 0xA2
+
+	/* AdvSIMD */
+	opVadd2D  = 0x91
+	opVmul2D  = 0x92
+	opVfma2D  = 0x93
+	opVadd4S  = 0x94
+	opVmul4S  = 0x95
+	opVdup2D  = 0x96
+	opUmovD   = 0x97
+	opInsD    = 0x98
+	opVfma4S  = 0xA3 /* vd += vn * vm (4S) */
+
 	arm64NOP = 0xD503201F
 	arm64RET = 0xD65F03C0
 

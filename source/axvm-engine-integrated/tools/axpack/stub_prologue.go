@@ -72,17 +72,8 @@ func emitIntPrologueReverseSave(buf []byte) []byte {
 }
 
 func emitIntPrologueLdpReload(buf []byte) []byte {
-	buf = appendU32(buf, 0xA9BA7BFD)
-	buf = appendU32(buf, 0x910003FD)
-	buf = appendU32(buf, 0xA90107E0)
-	buf = appendU32(buf, 0xA9020FE2)
-	buf = appendU32(buf, 0xA90317E4)
-	buf = appendU32(buf, 0xA9041FE6)
-	buf = appendU32(buf, 0xA9400BE1) // LDP x1,x2,[sp,#16]
-	buf = appendU32(buf, 0xA94113E3) // LDP x3,x4,[sp,#32]
-	buf = appendU32(buf, 0xA9421BE5) // LDP x5,x6,[sp,#48]
-	buf = appendU32(buf, 0xF94023E7) // LDR x7,[sp,#64]
-	return buf
+	/* PAC/JNI：部分机型上 LDP 重载序列会让 x1 读到栈地址而非首参；改走 classic LDR。 */
+	return emitIntPrologueClassic(buf)
 }
 
 func emitIntPrologueNoise(buf []byte) []byte {

@@ -759,6 +759,8 @@
 
 #include "axvm_interp_fp.inc"
 
+#include "axvm_interp_atomic.inc"
+
         AXVM_OP_BEGIN(AXOP_RET, op_ret)
             ctx->ret_pending = 1;
             ctx->ret_val = axvm_reg_read(ctx, 0);

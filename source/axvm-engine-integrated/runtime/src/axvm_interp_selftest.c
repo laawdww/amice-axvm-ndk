@@ -2,6 +2,7 @@
 #include "axvm_bridge.h"
 #include "axvm_bytecode.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -144,7 +145,13 @@ int axvm_interp_selftest(void)
 #if defined(AXVM_FLOAT_VM) && AXVM_FLOAT_VM
     /* FADD */
     {
-        uint8_t code[] = {AXOP_FADD_D, 0, 0, 1, AXOP_FMOV_X_BITS, 0, 0, AXOP_RET};
+        uint8_t code[] = {
+            AXOP_FMOV_D_BITS, 0, 0,
+            AXOP_FMOV_D_BITS, 1, 1,
+            AXOP_FADD_D, 0, 0, 1,
+            AXOP_FMOV_X_BITS, 0, 0,
+            AXOP_RET
+        };
         memcpy(buf + 40, code, sizeof(code));
         mk_hdr(buf, sizeof(code), 0);
         double da = 1.5, db = 2.5;
@@ -160,7 +167,71 @@ int axvm_interp_selftest(void)
             return 16;
         }
     }
+    /* VADD_2D lo-lane */
+    {
+        uint8_t code[] = {
+            AXOP_FMOV_D_BITS, 0, 0,
+            AXOP_FMOV_D_BITS, 1, 1,
+            AXOP_VADD_2D, 0, 0, 1,
+            AXOP_FMOV_X_BITS, 0, 0,
+            AXOP_RET
+        };
+        memcpy(buf + 40, code, sizeof(code));
+        mk_hdr(buf, sizeof(code), 0);
+        double da = 1.0, db = 2.0;
+        uint64_t a0, a1;
+        memcpy(&a0, &da, 8);
+        memcpy(&a1, &db, 8);
+        args[0] = a0;
+        args[1] = a1;
+        uint64_t expect = 0;
+        double de = 3.0;
+        memcpy(&expect, &de, 8);
+        if (run_bc(buf, 40 + sizeof(code), args, 2, expect) != 0) {
+            return 17;
+        }
+    }
 #endif
+
+    /* true atomic LDADD */
+    {
+        uint64_t cell = 5;
+        uint8_t code[] = {
+            AXOP_ATOMIC_LDADD64, 0, 1, 2,
+            AXOP_RET
+        };
+        memcpy(buf + 40, code, sizeof(code));
+        mk_hdr(buf, sizeof(code), 0);
+        args[0] = 0;
+        args[1] = 7;
+        args[2] = (uint64_t)(uintptr_t)&cell;
+        if (run_bc(buf, 40 + sizeof(code), args, 3, 5) != 0) {
+            return 18;
+        }
+        if (cell != 12) {
+            return 19;
+        }
+    }
+
+    /* true atomic CAS32 */
+    {
+        uint32_t cell = 9;
+        uint8_t code[] = {
+            AXOP_ATOMIC_CAS32, 0, 1, 2,
+            AXOP_RET
+        };
+        memcpy(buf + 40, code, sizeof(code));
+        mk_hdr(buf, sizeof(code), 0);
+        args[0] = 9; /* expected */
+        args[1] = 42; /* desired */
+        args[2] = (uint64_t)(uintptr_t)&cell;
+        if (run_bc(buf, 40 + sizeof(code), args, 3, 9) != 0) {
+            return 20;
+        }
+        if (cell != 42) {
+            return 21;
+        }
+    }
 
     return 0;
 }

@@ -64,6 +64,10 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 	if (word&0xFFFFFFFE) == 0xD503245E || word == 0xD503201F {
 		return liftedInsn{bytes: []byte{opNOP}, armOff: off, armSize: 4}, nil
 	}
+	/* DMB/DSB/ISB/CLREX 等屏障 — 宿主原子已带 memory order，提升为 NOP */
+	if (word & 0xFFFFF000) == 0xD5033000 {
+		return liftedInsn{bytes: []byte{opNOP}, armOff: off, armSize: 4}, nil
+	}
 	if word == arm64RET {
 		_ = fpUsed
 		return liftedInsn{bytes: []byte{opRet}, armOff: off, armSize: 4}, nil
@@ -524,8 +528,15 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 	if (word&0xFFC0FC00) == 0xC8407C00 || (word&0xFFC0FC00) == 0xC840FC00 {
 		return liftLdxr(word, off)
 	}
+	/* LDXR/LDAXR Wt */
+	if (word&0xFFC0FC00) == 0x88407C00 || (word&0xFFC0FC00) == 0x8840FC00 {
+		return liftLdxr32(word, off)
+	}
 	if (word&0xFFE0FC00) == 0xC8007C00 || (word&0xFFE0FC00) == 0xC800FC00 {
 		return liftStxr(word, off)
+	}
+	if (word&0xFFE0FC00) == 0x88007C00 || (word&0xFFE0FC00) == 0x8800FC00 {
+		return liftStxr32(word, off)
 	}
 	/* LDXP/LDAXP */
 	if (word&0xFFE07C00) == 0xC8600400 || (word&0xFFE07C00) == 0xC8601000 {
@@ -535,33 +546,52 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 	if (word&0xFFE07C00) == 0xC8202000 || (word&0xFFE07C00) == 0xC8203000 {
 		return liftStxp(word, off)
 	}
-	/* CAS/CASA/CASL/CASAL */
+	/* CAS/CASA/CASL/CASAL X */
 	if (word & 0xFFA07C00) == 0xC8A07C00 {
 		return liftCas(word, off)
+	}
+	/* CAS W */
+	if (word & 0xFFA07C00) == 0x88A07C00 {
+		return liftCas32(word, off)
 	}
 	/* CASP/CASPA/CASPL/CASPAL */
 	if (word & 0xFFA07C00) == 0x48207C00 {
 		return liftCasp(word, off)
 	}
-	/* LDADD/LDADDA/LDADDL/LDADDAL */
+	/* LDADD/LDADDA/LDADDL/LDADDAL X */
 	if (word & 0xFF20FC00) == 0xF8200000 {
 		return liftLdadd(word, off)
 	}
-	/* LDCLR/LDCLRA/LDCLRL/LDCLRAL */
+	if (word & 0xFF20FC00) == 0xB8200000 {
+		return liftLdadd32(word, off)
+	}
+	/* LDCLR */
 	if (word & 0xFF20FC00) == 0xF8201000 {
 		return liftLdclr(word, off)
 	}
-	/* LDEOR/LDEORA/LDEORL/LDEORAL */
+	if (word & 0xFF20FC00) == 0xB8201000 {
+		return liftLdclr32(word, off)
+	}
+	/* LDEOR */
 	if (word & 0xFF20FC00) == 0xF8202000 {
 		return liftLdeor(word, off)
 	}
-	/* LDSET/LDSETA/LDSETL/LDSETAL */
+	if (word & 0xFF20FC00) == 0xB8202000 {
+		return liftLdeor32(word, off)
+	}
+	/* LDSET */
 	if (word & 0xFF20FC00) == 0xF8203000 {
 		return liftLdset(word, off)
 	}
-	/* SWP/SWPA/SWPL/SWPAL */
+	if (word & 0xFF20FC00) == 0xB8203000 {
+		return liftLdset32(word, off)
+	}
+	/* SWP */
 	if (word & 0xFF20FC00) == 0xF8208000 {
 		return liftSwp(word, off)
+	}
+	if (word & 0xFF20FC00) == 0xB8208000 {
+		return liftSwp32(word, off)
 	}
 
 	/* LDR/STR unsigned offset (64/32) */
@@ -624,8 +654,8 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 		return liftLdrStrReg(word, off, true, 2, cache)
 	}
 
-	/* LDP/STP 64-bit (含前/后变址) */
-	if (word & 0x7E000000) == 0x28000000 {
+	/* LDP/STP（整数 + SIMD/FP，含前/后变址；V 位在 bit26） */
+	if (word & 0x3A000000) == 0x28000000 {
 		store := ((word >> 22) & 1) == 0
 		return liftLoadStorePair(word, off, store, cache)
 	}

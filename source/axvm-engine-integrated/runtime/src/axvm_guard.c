@@ -464,7 +464,7 @@ static int probe_exec_timing(axvm_guard_state_t *st)
 
     /*
      * JIT 快路径一次执行大量 VM 工作但 dispatch_tick 几乎不涨；
-     * 表现为「极少 tick + 长耗时」，不是调试器单步，跳过 strike。
+     * 表现为「极少 tick + 很长耗时」，不是调试器单步，跳过 strike。
      */
     if (d_insn > 0 && d_insn < 8u && d_ns > 1000000000ull) {
         st->timing_strikes = 0;
@@ -472,7 +472,7 @@ static int probe_exec_timing(axvm_guard_state_t *st)
     }
 
     /* 阈值：窗口耗时 > 20ms 视为异常（正常远低于 1ms）。 */
-    if (d_insn > 0 && d_ns > 1000000000ull) {
+    if (d_insn > 0 && d_ns > 20000000ull) {
         st->timing_strikes++;
     } else {
         st->timing_strikes = 0;
