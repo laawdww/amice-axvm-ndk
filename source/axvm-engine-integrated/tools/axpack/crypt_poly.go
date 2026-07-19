@@ -7,17 +7,48 @@ import (
 )
 
 const axvmPurposeCrypt = 0x50595243 /* 'CRYP' */
+const axvmPurposeKSeed = 0x4445534B /* 'KSED' */
 
-func masterSubkeyByte(master []byte, purpose uint32) byte {
-	if len(master) < 32 {
-		return 0
+func masterSubkeyBytes(master []byte, purpose uint32, n int) []byte {
+	if len(master) < 32 || n <= 0 {
+		return nil
 	}
 	tag := make([]byte, 4)
 	binary.LittleEndian.PutUint32(tag, purpose)
 	m := hmac.New(sha256.New, master[:32])
 	_, _ = m.Write(tag)
 	sum := m.Sum(nil)
-	return sum[0]
+	if n > len(sum) {
+		n = len(sum)
+	}
+	out := make([]byte, n)
+	copy(out, sum[:n])
+	return out
+}
+
+func masterSubkeyByte(master []byte, purpose uint32) byte {
+	b := masterSubkeyBytes(master, purpose, 1)
+	if len(b) == 0 {
+		return 0
+	}
+	return b[0]
+}
+
+/* After sealPackManifestMAC: XOR key_seed with MasterSeed-derived wrap (offline dump no longer yields crypt key). */
+func wrapPackKeySeed(pack, master []byte) {
+	if len(pack) < 64 || len(master) < 32 {
+		return
+	}
+	wrap := masterSubkeyBytes(master, axvmPurposeKSeed, 16)
+	if len(wrap) < 16 {
+		return
+	}
+	for i := 0; i < 16; i++ {
+		pack[28+i] ^= wrap[i]
+	}
+	flags := binary.LittleEndian.Uint32(pack[8:12])
+	flags |= axpkSeedWrapped
+	binary.LittleEndian.PutUint32(pack[8:12], flags)
 }
 
 func cryptV1(buf, seed []byte, funcID uint32) {

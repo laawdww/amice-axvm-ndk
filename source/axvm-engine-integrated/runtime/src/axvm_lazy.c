@@ -2,6 +2,7 @@
 #include "axvm_bytecode.h"
 #include "axvm_dynseed.h"
 #include "axvm_lazy_pf.h"
+#include "axvm_entropy.h"
 
 #include <string.h>
 
@@ -12,11 +13,11 @@
 
 #if defined(AXVM_LAZY_DECRYPT) && AXVM_LAZY_DECRYPT
 
-/* ------- 实例密钥熵源（与栈加密一致的 /dev/urandom + xorshift 回退） ------- */
+/* ------- 实例密钥熵源（urandom + xorshift 回退） ------- */
 static void lazy_fill_random(uint8_t *buf, size_t n)
 {
 #if defined(__linux__) || defined(__ANDROID__)
-    int fd = open("/dev/urandom", O_RDONLY);
+    int fd = axvm_open_urandom();
     if (fd >= 0) {
         size_t off = 0;
         while (off < n) {

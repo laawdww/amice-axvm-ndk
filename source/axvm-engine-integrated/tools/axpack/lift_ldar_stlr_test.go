@@ -88,3 +88,58 @@ func TestLiftScvtfDX(t *testing.T) {
 		t.Fatalf("SCVTF D,X: got %v", li.bytes)
 	}
 }
+
+func TestLiftCcmp(t *testing.T) {
+	cases := []struct {
+		name string
+		word uint32
+	}{
+		{"ccmp_x_reg", 0xFA401964}, /* ccmp x11, x0, #4, ne */
+		{"ccmp_x_reg2", 0xFA480120}, /* ccmp x9, x8, #0, eq */
+		{"ccmp_w_imm", 0x7A440940},  /* ccmp w10, #4, #0, eq */
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			li := liftOneWord(t, tc.word)
+			if len(li.bytes) < 1 || li.bytes[0] != opCcmp {
+				t.Fatalf("got %v want opCcmp", li.bytes)
+			}
+		})
+	}
+}
+
+func TestLiftUmaddl(t *testing.T) {
+	/* umaddl x19, w8, w9, x19 */
+	li := liftOneWord(t, 0x9BA94D13)
+	if len(li.bytes) < 1 {
+		t.Fatal("empty lift")
+	}
+	foundMul := false
+	for _, b := range li.bytes {
+		if b == opMulReg {
+			foundMul = true
+			break
+		}
+	}
+	if !foundMul {
+		t.Fatalf("expected MUL in UMADDL lift: %v", li.bytes)
+	}
+}
+
+func TestLiftLdrWPostIndex(t *testing.T) {
+	/* ldr w19, [x2], #196 */
+	li := liftOneWord(t, 0xB84C4453)
+	if len(li.bytes) < 1 || (li.bytes[0] != opLdurU32 && li.bytes[0] != opLdrU32) {
+		t.Fatalf("expected LDR W post, got %v", li.bytes)
+	}
+	foundAdd := false
+	for i := 0; i+2 < len(li.bytes); i++ {
+		if li.bytes[i] == opAddImm && li.bytes[i+1] == 2 && li.bytes[i+2] == 2 {
+			foundAdd = true
+			break
+		}
+	}
+	if !foundAdd {
+		t.Fatalf("missing ADD writeback in %v", li.bytes)
+	}
+}

@@ -1216,10 +1216,132 @@ Java_com_axvm_demo_NativeVm_vmDispatchEngineId(JNIEnv *env, jobject thiz)
     return (jint)axvm_engine_default_id();
 }
 
+/* Dual-SO apk-bind: always exported (delivery builds need this before native_core). */
+JNIEXPORT jboolean JNICALL
+Java_com_hook_bypass_AxvmApkBinding_nativeSetBinding(JNIEnv *env, jclass clazz,
+                                                     jstring jpkg, jbyteArray jcert)
+{
+    (void)clazz;
+    if (!jpkg || !jcert) {
+        return JNI_FALSE;
+    }
+    const char *pkg = (*env)->GetStringUTFChars(env, jpkg, NULL);
+    if (!pkg) {
+        return JNI_FALSE;
+    }
+    if ((*env)->GetArrayLength(env, jcert) != 32) {
+        (*env)->ReleaseStringUTFChars(env, jpkg, pkg);
+        return JNI_FALSE;
+    }
+    jbyte *cert = (*env)->GetByteArrayElements(env, jcert, NULL);
+    if (!cert) {
+        (*env)->ReleaseStringUTFChars(env, jpkg, pkg);
+        return JNI_FALSE;
+    }
+    int ok = axvm_dynseed_set_apk_binding(pkg, (const uint8_t *)cert);
+    (*env)->ReleaseByteArrayElements(env, jcert, cert, JNI_ABORT);
+    (*env)->ReleaseStringUTFChars(env, jpkg, pkg);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved)
 {
     (void)reserved;
-    axvm_register_dispatch((void *)(uintptr_t)axvm_dispatch_ex);
+    axvm_register_dispatch((void *)(uintptr_t)x7d);
+#if defined(__ANDROID__) && defined(AXVM_DYNAMIC_SEED) && AXVM_DYNAMIC_SEED
+    /* Pre-bind module package+cert before libnative_core loads (apk-bind AXDS).
+     * Material is XOR-obfuscated to avoid contiguous pkg/cert in .rodata. */
+    if (!axvm_dynseed_apk_binding_present()) {
+        static const uint8_t k_pkg_enc[] = {
+            /* com.example.iauuwnno ^ 0x5C */
+            0x3f, 0x33, 0x31, 0x72, 0x39, 0x24, 0x3d, 0x31,
+            0x2c, 0x30, 0x39, 0x72, 0x35, 0x3d, 0x29, 0x29,
+            0x2b, 0x32, 0x32, 0x33
+        };
+        static const uint8_t k_cert_enc[32] = {
+            0x83, 0x5d, 0x24, 0xa6, 0xb3, 0x08, 0xe4, 0x08,
+            0xf1, 0x5e, 0x93, 0x98, 0x62, 0x2a, 0xaa, 0x7f,
+            0xa1, 0xe3, 0x02, 0x99, 0x94, 0x87, 0xa4, 0xab,
+            0x30, 0x44, 0x51, 0x7a, 0x16, 0x29, 0x3e, 0x85
+        };
+        char pkg[sizeof(k_pkg_enc) + 1];
+        uint8_t cert[32];
+        size_t i;
+        volatile uint8_t xk = 0x5Cu;
+        for (i = 0; i < sizeof(k_pkg_enc); ++i) {
+            pkg[i] = (char)(k_pkg_enc[i] ^ xk);
+        }
+        pkg[sizeof(k_pkg_enc)] = 0;
+        for (i = 0; i < 32; ++i) {
+            cert[i] = (uint8_t)(k_cert_enc[i] ^ xk);
+        }
+        (void)axvm_dynseed_set_apk_binding(pkg, cert);
+        volatile char *pw = pkg;
+        volatile uint8_t *cw = cert;
+        for (i = 0; i < sizeof(pkg); ++i) {
+            pw[i] = 0;
+        }
+        for (i = 0; i < sizeof(cert); ++i) {
+            cw[i] = 0;
+        }
+    }
+#endif
+#if defined(__ANDROID__)
+    /* Register ApkBinding even when DEMO_JNI is OFF (LSPosed Dual-SO). */
+    {
+        JNIEnv *env = NULL;
+        if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) == JNI_OK && env) {
+            char cls_name[40], meth[24], sig[32];
+            /* XOR 0xA7 — avoid FindClass / RegisterNatives plaintext in .rodata */
+            static const uint8_t cls_enc[] = {
+                0xc4, 0xc8, 0xca, 0x88, 0xcf, 0xc8, 0xc8, 0xcc, 0x88, 0xc5, 0xde, 0xd7, 0xc6, 0xd4, 0xd4, 0x88,
+                0xe6, 0xdf, 0xd1, 0xca, 0xe6, 0xd7, 0xcc, 0xe5, 0xce, 0xc9, 0xc3, 0xce, 0xc9, 0xc0
+            };
+            static const uint8_t meth_enc[] = {
+                0xc9, 0xc6, 0xd3, 0xce, 0xd1, 0xc2, 0xf4, 0xc2, 0xd3, 0xe5, 0xce, 0xc9, 0xc3, 0xce, 0xc9, 0xc0
+            };
+            static const uint8_t sig_enc[] = {
+                0x8f, 0xeb, 0xcd, 0xc6, 0xd1, 0xc6, 0x88, 0xcb, 0xc6, 0xc9, 0xc0, 0x88, 0xf4, 0xd3, 0xd5, 0xce,
+                0xc9, 0xc0, 0x9c, 0xfc, 0xe5, 0x8e, 0xfd
+            };
+            volatile uint8_t xk = 0xA7u;
+            size_t i;
+            for (i = 0; i < sizeof(cls_enc); ++i) {
+                cls_name[i] = (char)(cls_enc[i] ^ xk);
+            }
+            cls_name[sizeof(cls_enc)] = 0;
+            for (i = 0; i < sizeof(meth_enc); ++i) {
+                meth[i] = (char)(meth_enc[i] ^ xk);
+            }
+            meth[sizeof(meth_enc)] = 0;
+            for (i = 0; i < sizeof(sig_enc); ++i) {
+                sig[i] = (char)(sig_enc[i] ^ xk);
+            }
+            sig[sizeof(sig_enc)] = 0;
+            JNINativeMethod bind_methods[] = {
+                { meth, sig,
+                  (void *)Java_com_hook_bypass_AxvmApkBinding_nativeSetBinding },
+            };
+            jclass bind_cls = (*env)->FindClass(env, cls_name);
+            if (bind_cls) {
+                (void)(*env)->RegisterNatives(env, bind_cls, bind_methods, 1);
+                (*env)->DeleteLocalRef(env, bind_cls);
+            } else {
+                (*env)->ExceptionClear(env);
+            }
+            volatile char *w;
+            for (w = cls_name; w < cls_name + sizeof(cls_name); ++w) {
+                *w = 0;
+            }
+            for (w = meth; w < meth + sizeof(meth); ++w) {
+                *w = 0;
+            }
+            for (w = sig; w < sig + sizeof(sig); ++w) {
+                *w = 0;
+            }
+        }
+    }
+#endif
 #if defined(AXVM_DEMO_JNI) && AXVM_DEMO_JNI
 #if defined(__ANDROID__)
 #if defined(AXVM_DYNAMIC_SEED) && AXVM_DYNAMIC_SEED

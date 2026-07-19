@@ -52,6 +52,7 @@ typedef struct axvm_dynseed_block {
 #define AXVM_DYNSEED_PURPOSE_STRCRYPT 0x54525453u /* 'STRT' — 模块 Q */
 #define AXVM_DYNSEED_PURPOSE_JNI_TUN 0x4e494a54u /* 'TJNI' — 模块 AB 隧道 */
 #define AXVM_DYNSEED_PURPOSE_CRYPT  0x50595243u /* 'CRYP' — 模块 N 流密码变体 */
+#define AXVM_DYNSEED_PURPOSE_KSEED  0x4445534Bu /* 'KSED' — wrap on-disk pack key_seed */
 #define AXVM_DYNSEED_PURPOSE_DISPATCH 0x54434944u /* 'DICT' — 模块 N goto 调度置换 */
 #define AXVM_DYNSEED_PURPOSE_HANDLER  0x4c4f5048u /* 'HPOL' — Phase3 handler 多态 */
 #define AXVM_DYNSEED_PURPOSE_RISCC    0x43435352u /* 'RISC' — Phase3 RISCC wire 置换 */

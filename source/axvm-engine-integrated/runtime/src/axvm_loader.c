@@ -11,6 +11,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 #include <dlfcn.h>
 #include <link.h>
 #include <elf.h>
@@ -26,6 +27,20 @@
 void axvm_crypt_set_key(const uint8_t *seed, size_t n);
 void axvm_crypt_set_variant(uint8_t variant);
 void axvm_crypt_decrypt(uint8_t *buf, size_t len, uint32_t func_id);
+
+/* Avoid plaintext "/proc/self/maps" in .rodata (decomp pass2). */
+static void axvm_maps_path(char out[24])
+{
+    static const uint8_t enc[] = {
+        0x88, 0xd7, 0xd5, 0xc8, 0xc4, 0x88, 0xd4, 0xc2, 0xcb, 0xc1, 0x88, 0xca, 0xc6, 0xd7, 0xd4
+    };
+    volatile uint8_t k = 0xA7u;
+    volatile char *vout = out;
+    for (size_t i = 0; i < sizeof(enc); ++i) {
+        vout[i] = (char)(enc[i] ^ k);
+    }
+    vout[sizeof(enc)] = '\0';
+}
 
 #define AXVM_MAX_MODULES 16
 #define AXVM_MAX_FUNCS   128
@@ -112,6 +127,51 @@ void axvm_register_dispatch(void *dispatch_fn)
 }
 
 #if defined(AXVM_DYNAMIC_SEED) && AXVM_DYNAMIC_SEED
+/* Unwrap on-disk key_seed when AXPK_FLAG_SEED_WRAPPED (MasterSeed KSED). */
+static int pack_resolve_key_seed(const axvm_pack_hdr_t *hdr, uint8_t out[16])
+{
+    if (!hdr || !out) {
+        return 0;
+    }
+    memcpy(out, hdr->key_seed, 16);
+    if (!(hdr->flags & AXPK_FLAG_SEED_WRAPPED)) {
+        return 1;
+    }
+    if (!axvm_dynseed_master_is_real()) {
+        return 0;
+    }
+    uint8_t mp[32];
+    uint8_t wrap[16];
+    axvm_dynseed_get_master_plain(mp);
+    axvm_dynseed_master_subkey(mp, AXVM_DYNSEED_PURPOSE_KSEED, wrap, sizeof(wrap));
+    for (size_t i = 0; i < 16; ++i) {
+        out[i] ^= wrap[i];
+    }
+    volatile uint8_t *w = mp;
+    for (size_t i = 0; i < sizeof(mp); ++i) {
+        w[i] = 0;
+    }
+    w = wrap;
+    for (size_t i = 0; i < sizeof(wrap); ++i) {
+        w[i] = 0;
+    }
+    return 1;
+}
+#else
+static int pack_resolve_key_seed(const axvm_pack_hdr_t *hdr, uint8_t out[16])
+{
+    if (!hdr || !out) {
+        return 0;
+    }
+    if (hdr->flags & AXPK_FLAG_SEED_WRAPPED) {
+        return 0;
+    }
+    memcpy(out, hdr->key_seed, 16);
+    return 1;
+}
+#endif
+
+#if defined(AXVM_DYNAMIC_SEED) && AXVM_DYNAMIC_SEED
 /* 在扫描派生 pack magic 之前，先从文件尾探测 AXDS（AXDS 位于 pack 之后）。 */
 static void ensure_dynseed_probe_tail(const uint8_t *buf, size_t len)
 {
@@ -157,10 +217,19 @@ static uint32_t pack_manifest_mac32(const uint8_t *p, size_t len)
         return 0;
     }
 
+    uint8_t seed[16];
+    if (!pack_resolve_key_seed(hdr, seed)) {
+        return 0;
+    }
+
     uint8_t key[AXVM_SHA256_DIGEST];
     uint8_t mac[AXVM_SHA256_DIGEST];
     uint8_t *canon = (uint8_t *)malloc(pack_len);
     if (!canon) {
+        volatile uint8_t *ws = seed;
+        for (size_t i = 0; i < sizeof(seed); ++i) {
+            ws[i] = 0;
+        }
         return 0;
     }
     memcpy(canon, p, pack_len);
@@ -169,8 +238,10 @@ static uint32_t pack_manifest_mac32(const uint8_t *p, size_t len)
     wh->checksum = 0;
     wh->file_off = 0; /* file_off 为注入阶段回填，不参与 MAC */
     wh->flags &= ~AXPK_FLAG_WIPED; /* prepatch 可能清除此位 */
+    wh->flags &= ~AXPK_FLAG_SEED_WRAPPED;
+    memcpy(wh->key_seed, seed, sizeof(seed));
 
-    axvm_hmac_sha256(hdr->key_seed, sizeof(hdr->key_seed),
+    axvm_hmac_sha256(seed, sizeof(seed),
                      g_axpk_manifest_label, sizeof(g_axpk_manifest_label) - 1u, key);
     axvm_hmac_sha256(key, sizeof(key), canon, pack_len, mac);
 
@@ -181,6 +252,7 @@ static uint32_t pack_manifest_mac32(const uint8_t *p, size_t len)
     volatile uint8_t *wk = key;
     volatile uint8_t *wm = mac;
     volatile uint8_t *wc = canon;
+    volatile uint8_t *ws = seed;
     for (size_t i = 0; i < sizeof(key); ++i) {
         wk[i] = 0;
     }
@@ -189,6 +261,9 @@ static uint32_t pack_manifest_mac32(const uint8_t *p, size_t len)
     }
     for (size_t i = 0; i < pack_len; ++i) {
         wc[i] = 0;
+    }
+    for (size_t i = 0; i < sizeof(seed); ++i) {
+        ws[i] = 0;
     }
     free(canon);
     return out;
@@ -238,14 +313,28 @@ static int pack_valid(const uint8_t *p, size_t len)
 			return 1;
 		}
 
+static void loader_xor_dec(char *out, const uint8_t *enc, size_t n)
+{
+    volatile uint8_t k = 0xA7u;
+    volatile char *vout = out;
+    for (size_t i = 0; i < n; ++i) {
+        vout[i] = (char)(enc[i] ^ k);
+    }
+    vout[n] = '\0';
+}
+
 static int pack_export_name_trusted(const char *name)
 {
     if (!name || name[0] == '\0') {
         return 0;
     }
     /* axpack decoy 块：_axdecoy_N，不得当作真 pack 加载 */
-    if (name[0] == '_' &&
-        strncmp(name, "_axdecoy_", 9) == 0) {
+    char decoy[12];
+    static const uint8_t decoy_enc[] = {
+        0xf8, 0xc6, 0xdf, 0xc3, 0xc2, 0xc4, 0xc8, 0xde, 0xf8
+    };
+    loader_xor_dec(decoy, decoy_enc, sizeof(decoy_enc));
+    if (name[0] == '_' && strncmp(name, decoy, sizeof(decoy_enc)) == 0) {
         return 0;
     }
     return 1;
@@ -289,12 +378,33 @@ static int pack_trusted(const uint8_t *p, size_t len)
 static int path_is_scan_target(const char *path)
 {
     if (path && path[0]) {
-        if (strstr(path, "libaxvm.so") != NULL) {
+        char needle[16];
+        static const uint8_t self_enc[] = {
+            0xcb, 0xce, 0xc5, 0xc6, 0xdf, 0xd1, 0xca, 0x89, 0xd4, 0xc8
+        };
+        static const uint8_t sys_enc[] = {
+            0x88, 0xd4, 0xde, 0xd4, 0xd3, 0xc2, 0xca, 0x88
+        };
+        static const uint8_t apex_enc[] = {
+            0x88, 0xc6, 0xd7, 0xc2, 0xdf, 0x88
+        };
+        static const uint8_t vend_enc[] = {
+            0x88, 0xd1, 0xc2, 0xc9, 0xc3, 0xc8, 0xd5, 0x88
+        };
+        loader_xor_dec(needle, self_enc, sizeof(self_enc));
+        if (strstr(path, needle) != NULL) {
             return 0;
         }
-        if (strstr(path, "/system/") != NULL ||
-            strstr(path, "/apex/") != NULL ||
-            strstr(path, "/vendor/") != NULL) {
+        loader_xor_dec(needle, sys_enc, sizeof(sys_enc));
+        if (strstr(path, needle) != NULL) {
+            return 0;
+        }
+        loader_xor_dec(needle, apex_enc, sizeof(apex_enc));
+        if (strstr(path, needle) != NULL) {
+            return 0;
+        }
+        loader_xor_dec(needle, vend_enc, sizeof(vend_enc));
+        if (strstr(path, needle) != NULL) {
             return 0;
         }
     }
@@ -354,11 +464,8 @@ static void patch_module_gots(axvm_module_t *mod)
     const axvm_pack_hdr_t *hdr = (const axvm_pack_hdr_t *)mod->pack;
     void *dispatch = g_registered_dispatch;
     if (!dispatch) {
-        dispatch = (void *)(uintptr_t)axvm_dispatch_ex;
-        void *resolved = dlsym(RTLD_DEFAULT, "axvm_dispatch_ex");
-        if (resolved) {
-            dispatch = resolved;
-        }
+        /* Prefer direct symbol — avoid dlsym("x7d") string fingerprint. */
+        dispatch = (void *)(uintptr_t)x7d;
     }
     axvm_got_crypt_bind_dispatch(dispatch);
 
@@ -392,7 +499,7 @@ static void patch_module_gots(axvm_module_t *mod)
         if (n != 4) {
 #if defined(AXVM_GOT_CRYPT) && AXVM_GOT_CRYPT
             if (axvm_got_crypt_enabled()) {
-                n = write_stub_call(slot, (void *)(uintptr_t)axvm_got_gate);
+                n = write_stub_call(slot, (void *)(uintptr_t)x7g);
             } else
 #endif
             {
@@ -482,12 +589,33 @@ void axvm_module_load_ex(const uint8_t *pack, size_t len, void *load_base,
         return;
     }
 
-#if defined(__ANDROID__)
-#include <android/log.h>
-#endif
-
     const axvm_pack_hdr_t *hdr = (const axvm_pack_hdr_t *)pack;
-    axvm_crypt_set_key(hdr->key_seed, sizeof(hdr->key_seed));
+    uint8_t plain_seed[16];
+    if (!pack_resolve_key_seed(hdr, plain_seed)) {
+        return;
+    }
+    axvm_crypt_set_key(plain_seed, sizeof(plain_seed));
+    volatile uint8_t *ps = plain_seed;
+    for (size_t i = 0; i < sizeof(plain_seed); ++i) {
+        ps[i] = 0;
+    }
+    /* Scrub on-disk/in-image key_seed after installing into crypt state. */
+    if (pack_owned) {
+        volatile uint8_t *seed = (volatile uint8_t *)(uintptr_t)hdr->key_seed;
+        for (size_t i = 0; i < sizeof(hdr->key_seed); ++i) {
+            seed[i] = 0;
+        }
+    } else {
+        uintptr_t seed_addr = (uintptr_t)hdr->key_seed;
+        uintptr_t page = seed_addr & ~(uintptr_t)(4096u - 1u);
+        if (mprotect((void *)page, 4096, PROT_READ | PROT_WRITE) == 0) {
+            volatile uint8_t *seed = (volatile uint8_t *)seed_addr;
+            for (size_t i = 0; i < sizeof(hdr->key_seed); ++i) {
+                seed[i] = 0;
+            }
+            (void)mprotect((void *)page, 4096, PROT_READ);
+        }
+    }
 #if defined(AXVM_DYNAMIC_SEED) && AXVM_DYNAMIC_SEED
     if (axvm_dynseed_master_is_real()) {
         uint8_t mp[32];
@@ -495,15 +623,14 @@ void axvm_module_load_ex(const uint8_t *pack, size_t len, void *load_base,
         uint8_t sub[4];
         axvm_dynseed_master_subkey(mp, AXVM_DYNSEED_PURPOSE_CRYPT, sub, sizeof(sub));
         axvm_crypt_set_variant((uint8_t)(sub[0] & 3u));
-#if defined(__ANDROID__)
-        __android_log_print(ANDROID_LOG_ERROR, "AXVM",
-                            "module crypt var=%u master=%02x%02x%02x%02x apk_bind=%d",
-                            (unsigned)(sub[0] & 3u), mp[0], mp[1], mp[2], mp[3],
-                            axvm_dynseed_apk_bind_required());
-#endif
+        /* Do not log master bytes — wipe after deriving variant only. */
         volatile uint8_t *w = mp;
         for (size_t i = 0; i < sizeof(mp); ++i) {
             w[i] = 0;
+        }
+        volatile uint8_t *s = sub;
+        for (size_t i = 0; i < sizeof(sub); ++i) {
+            s[i] = 0;
         }
     }
 #endif
@@ -604,12 +731,13 @@ static axvm_func_slot_t *find_func(uint32_t func_id)
 }
 
 __attribute__((visibility("default")))
-uint64_t axvm_dispatch_ex(uint32_t func_id,
+uint64_t x7d(uint32_t func_id,
                           uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
                           uint64_t sret_x8)
 {
-    static int s_depth;
+    /* Per-thread: shared static depth races under heartbeat / hook threads. */
+    static __thread int s_depth;
     if (s_depth > 64) {
         AXVM_LOGE("dispatch recurse depth=%d id=%u", s_depth, func_id);
         return 0;
@@ -796,7 +924,9 @@ static size_t readable_map_len(const void *addr, size_t want)
     if (!addr || want == 0) {
         return 0;
     }
-	FILE *fp = fopen("/proc/self/maps", "r");
+	char maps_path[24];
+	axvm_maps_path(maps_path);
+	FILE *fp = fopen(maps_path, "r");
 	if (!fp) {
 		return 0;
 	}
@@ -824,7 +954,9 @@ static size_t readable_map_len(const void *addr, size_t want)
 
 static void scan_maps_fallback(int *found)
 {
-    FILE *fp = fopen("/proc/self/maps", "r");
+    char maps_path[24];
+    axvm_maps_path(maps_path);
+    FILE *fp = fopen(maps_path, "r");
     if (!fp) {
         return;
     }
@@ -1343,9 +1475,13 @@ static int patch_victim_entries(axvm_module_t *mod)
     int patched = 0;
     void *token_entry = NULL;
     if (hdr->flags & AXPK_FLAG_TOKEN) {
-        token_entry = dlsym(RTLD_DEFAULT, "axvm_entry_token");
+        /* Prefer opaque export name; decode to avoid dlsym fingerprint. */
+        char tok_name[8];
+        static const uint8_t tok_enc[] = { 0xdf, 0x90, 0xd3 }; /* "x7t" ^ 0xA7 */
+        loader_xor_dec(tok_name, tok_enc, sizeof(tok_enc));
+        token_entry = dlsym(RTLD_DEFAULT, tok_name);
         if (!token_entry) {
-            AXVM_LOGW( "token entry: axvm_entry_token missing");
+            AXVM_LOGW("token entry missing");
         }
     }
     for (uint32_t k = 0; k < n; ++k) {

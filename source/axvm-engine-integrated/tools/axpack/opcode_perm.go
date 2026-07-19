@@ -76,8 +76,10 @@ func opOperandLen(op byte) (int, bool) {
 		return 1, true
 	case opCallNat:
 		return 9, true
-	case opLdri64Vaddr, opCallNatVaddr:
-		return 9, true
+	case opLdri64Vaddr:
+		return 9, true /* u8 rd; u64 vaddr */
+	case opCallNatVaddr:
+		return 8, true /* u64 vaddr */
 	case opPushPair, opPopPair:
 		return 2, true
 	case 0x62 /*VM_ENTER*/ :
@@ -100,6 +102,10 @@ func opOperandLen(op byte) (int, bool) {
 		return 3, true
 	case opUdivReg, opSdivReg:
 		return 3, true
+	case opMrsTpidr:
+		return 1, true
+	case opCcmp:
+		return 5, true
 	}
 	return 0, false
 }

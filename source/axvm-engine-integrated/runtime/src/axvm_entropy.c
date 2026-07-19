@@ -1,5 +1,6 @@
 #include "axvm_entropy.h"
 
+#include <stdint.h>
 #include <string.h>
 #include <time.h>
 
@@ -9,6 +10,43 @@
 #include <sys/syscall.h>
 #include <dlfcn.h>
 #endif
+
+static void entropy_maps_path(char out[24])
+{
+    static const uint8_t enc[] = {
+        0x88, 0xd7, 0xd5, 0xc8, 0xc4, 0x88, 0xd4, 0xc2, 0xcb, 0xc1, 0x88, 0xca, 0xc6, 0xd7, 0xd4
+    };
+    volatile uint8_t k = 0xA7u;
+    volatile char *vout = out;
+    for (size_t i = 0; i < sizeof(enc); ++i) {
+        vout[i] = (char)(enc[i] ^ k);
+    }
+    vout[sizeof(enc)] = '\0';
+}
+
+int axvm_open_urandom(void)
+{
+#if defined(__linux__) || defined(__ANDROID__)
+    /* "/dev/urandom" ^ 0xA7 */
+    static const uint8_t enc[] = {
+        0x88, 0xc3, 0xc2, 0xd1, 0x88, 0xd2, 0xd5, 0xc6, 0xc9, 0xc3, 0xc8, 0xca
+    };
+    char path[16];
+    volatile uint8_t k = 0xA7u;
+    volatile char *vout = path;
+    for (size_t i = 0; i < sizeof(enc); ++i) {
+        vout[i] = (char)(enc[i] ^ k);
+    }
+    vout[sizeof(enc)] = '\0';
+    int fd = open(path, O_RDONLY);
+    for (size_t i = 0; i < sizeof(path); ++i) {
+        vout[i] = 0;
+    }
+    return fd;
+#else
+    return -1;
+#endif
+}
 
 static size_t put_bytes(uint8_t *out, size_t cap, size_t off,
                         const void *src, size_t n)
@@ -43,8 +81,10 @@ static uint64_t entropy_aslr_base(void)
     if (dladdr((void *)(uintptr_t)&entropy_aslr_base, &info) != 0 && info.dli_fbase) {
         return (uint64_t)(uintptr_t)info.dli_fbase;
     }
-    /* 回退：读取 /proc/self/maps 第一行起始地址。 */
-    int fd = open("/proc/self/maps", O_RDONLY);
+    /* 回退：读取 maps 第一行起始地址。 */
+    char maps_path[24];
+    entropy_maps_path(maps_path);
+    int fd = open(maps_path, O_RDONLY);
     if (fd >= 0) {
         char buf[64];
         ssize_t n = read(fd, buf, sizeof(buf) - 1);
@@ -79,10 +119,10 @@ size_t axvm_entropy_collect(void *stack_hint, uint8_t *out, size_t cap)
     size_t off = 0;
 
 #if defined(__linux__) || defined(__ANDROID__)
-    /* 1. /dev/urandom（主熵） */
+    /* 1. urandom（主熵；路径 XOR，避免 .rodata 明文） */
     uint8_t rnd[16] = {0};
     int got_rnd = 0;
-    int fd = open("/dev/urandom", O_RDONLY);
+    int fd = axvm_open_urandom();
     if (fd >= 0) {
         size_t r = 0;
         while (r < sizeof(rnd)) {

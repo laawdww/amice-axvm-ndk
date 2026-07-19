@@ -29,6 +29,9 @@ extern "C" {
  */
 size_t axvm_entropy_collect(void *stack_hint, uint8_t *out, size_t cap);
 
+/* Open /dev/urandom without leaving the path as a contiguous .rodata literal. */
+int axvm_open_urandom(void);
+
 #ifdef __cplusplus
 }
 #endif

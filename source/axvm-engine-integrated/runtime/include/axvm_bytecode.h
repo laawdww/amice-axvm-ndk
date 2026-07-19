@@ -156,6 +156,8 @@ typedef enum axvm_opcode {
     AXOP_FSQRT_D     = 0xA5, /* u8 vd; u8 vn — FSQRT Dd, Dn (AXVM_FLOAT_VM) */
     AXOP_UDIV_REG    = 0xA6, /* u8 rd; u8 rn; u8 rm — unsigned divide */
     AXOP_SDIV_REG    = 0xA7, /* u8 rd; u8 rn; u8 rm — signed divide */
+    /* CCMP/CCMN: flags bit0=is32 bit1=imm bit2=ccmn; nzcv_arm = ARM PSTATE nibble (N|Z|C|V) */
+    AXOP_CCMP        = 0xA8, /* u8 rn; u8 rm_or_imm; u8 cond; u8 nzcv_arm; u8 flags */
 } axvm_opcode_t;
 
 typedef enum axvm_cond {

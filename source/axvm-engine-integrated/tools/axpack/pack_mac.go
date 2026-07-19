@@ -25,9 +25,12 @@ func axpkManifestMAC32(pack []byte) uint32 {
 	binary.LittleEndian.PutUint64(canon[48:56], 0) // file_off 为注入阶段回填
 	flags := binary.LittleEndian.Uint32(canon[8:12])
 	flags &^= axpkWiped // 运行时 prepatch 可能清除此位
+	flags &^= axpkSeedWrapped
 	binary.LittleEndian.PutUint32(canon[8:12], flags)
 
-	kdf := hmac.New(sha256.New, hdr[28:44])
+	seed := append([]byte(nil), hdr[28:44]...)
+	/* Caller must unwrap seed before seal/verify when SEED_WRAPPED; seal path uses plaintext. */
+	kdf := hmac.New(sha256.New, seed)
 	_, _ = kdf.Write([]byte(axpkManifestLabel))
 	key := kdf.Sum(nil)
 

@@ -29,16 +29,40 @@ static uint32_t dynseed_fnv1a32(const uint8_t *p, size_t n)
 
 void axvm_dynseed_master_cipher(uint8_t *buf, size_t n, const uint8_t nonce[16])
 {
-    if (!buf || !nonce) {
+    /* HMAC-SHA256(nonce, "AXDS-MK2"||block) — must match axpack dynseedMasterCipher. */
+    size_t off;
+    unsigned block;
+    if (!buf || !nonce || n == 0) {
         return;
     }
-    for (int round = 0; round < 4; ++round) {
-        for (size_t i = 0; i < n; ++i) {
-            uint8_t k = (uint8_t)(nonce[i & 15]
-                                  ^ nonce[(i * 7u + 3u) & 15]
-                                  ^ (uint8_t)(i * 167u + 0x3Bu)
-                                  ^ (uint8_t)(round * 31u + 17u));
-            buf[i] ^= k;
+    for (off = 0, block = 0; off < n; off += 32u, ++block) {
+        uint8_t msg[9];
+        uint8_t ks[AXVM_SHA256_DIGEST];
+        size_t chunk;
+        /* Obfuscated "AXDS-MK2" — volatile XOR so compiler cannot fold to .rodata string. */
+        {
+            volatile uint8_t x = 0xA5u;
+            msg[0] = (uint8_t)(0xE4u ^ x);
+            msg[1] = (uint8_t)(0xFDu ^ x);
+            msg[2] = (uint8_t)(0xE1u ^ x);
+            msg[3] = (uint8_t)(0xF6u ^ x);
+            msg[4] = (uint8_t)(0x88u ^ x);
+            msg[5] = (uint8_t)(0xE8u ^ x);
+            msg[6] = (uint8_t)(0xEEu ^ x);
+            msg[7] = (uint8_t)(0x97u ^ x);
+        }
+        msg[8] = (uint8_t)block;
+        axvm_hmac_sha256(nonce, 16, msg, sizeof(msg), ks);
+        chunk = n - off;
+        if (chunk > 32u) {
+            chunk = 32u;
+        }
+        for (size_t i = 0; i < chunk; ++i) {
+            buf[off + i] ^= ks[i];
+        }
+        volatile uint8_t *w = ks;
+        for (size_t i = 0; i < sizeof(ks); ++i) {
+            w[i] = 0;
         }
     }
 }
@@ -68,7 +92,21 @@ static int     g_apk_binding_present;
 static char    g_apk_package[256];
 static uint8_t g_apk_cert_sha256[32];
 
-static const char k_apk_bind_prefix[] = "AXVM_APK_BIND1";
+/* Encrypted "AXVM_APK_BIND1" — numeric only; decode with volatile XOR (no .rodata plain). */
+static const uint8_t k_apk_bind_prefix_enc[14] = {
+    0xe4, 0xfd, 0xf3, 0xe8, 0xfa, 0xe4, 0xf5, 0xee,
+    0xfa, 0xe7, 0xec, 0xeb, 0xe1, 0x94
+};
+
+static void apk_bind_prefix_plain(char out[15])
+{
+    volatile uint8_t x = 0xA5u;
+    size_t i;
+    for (i = 0; i < sizeof(k_apk_bind_prefix_enc); ++i) {
+        out[i] = (char)(k_apk_bind_prefix_enc[i] ^ x);
+    }
+    out[sizeof(k_apk_bind_prefix_enc)] = 0;
+}
 
 static void master_dec_plain(uint8_t *buf, size_t n);
 static void synth_master(void);
@@ -88,9 +126,17 @@ static void derive_apk_bound_master(const uint8_t raw_seed[32],
     if (plen > 200u) {
         plen = 200u;
     }
-    size_t prefix_len = strlen(k_apk_bind_prefix);
-    memcpy(msg, k_apk_bind_prefix, prefix_len);
-    n = prefix_len;
+    {
+        char prefix[15];
+        apk_bind_prefix_plain(prefix);
+        size_t prefix_len = 14u;
+        memcpy(msg, prefix, prefix_len);
+        n = prefix_len;
+        volatile char *pw = prefix;
+        for (size_t i = 0; i < sizeof(prefix); ++i) {
+            pw[i] = 0;
+        }
+    }
     memcpy(msg + n, package, plen);
     n += plen;
     msg[n++] = 0;
@@ -165,13 +211,15 @@ int axvm_dynseed_apk_bind_selftest(void)
     uint8_t out[32];
     const char *pkg = "com.example.app";
     size_t plen = strlen(pkg);
-    size_t prefix_len = strlen(k_apk_bind_prefix);
+    char prefix[15];
     size_t n = 0;
+    apk_bind_prefix_plain(prefix);
+    size_t prefix_len = 14u;
     for (size_t i = 0; i < 32; ++i) {
         raw[i] = (uint8_t)(i + 1u);
         cert[i] = (uint8_t)(0xA0u + i);
     }
-    memcpy(msg, k_apk_bind_prefix, prefix_len);
+    memcpy(msg, prefix, prefix_len);
     n = prefix_len;
     memcpy(msg + n, pkg, plen);
     n += plen;
@@ -196,18 +244,30 @@ int axvm_dynseed_apk_bind_selftest(void)
     return 1;
 }
 
-static const char k_pack_magic_label[] = "AXVM_PACK_MAGIC1";
-
 static uint32_t derive_pack_magic_from_raw(const uint8_t raw[32])
 {
-    size_t label_len = strlen(k_pack_magic_label);
-    uint8_t msg[16 + 32];
-    if (label_len > sizeof(msg) - 32) {
-        label_len = sizeof(msg) - 32;
+    /* "AXVM_PACK_MAGIC1" via volatile XOR — no contiguous .rodata label. */
+    static const uint8_t enc[] = {
+        0xe4, 0xfd, 0xf3, 0xe8, 0xfa, 0xf5, 0xe4, 0xe6, 0xee, 0xfa,
+        0xe8, 0xe4, 0xe2, 0xec, 0xe6, 0x94
+    };
+    char label[sizeof(enc) + 1];
+    volatile uint8_t x = 0xA5u;
+    for (size_t i = 0; i < sizeof(enc); ++i) {
+        label[i] = (char)(enc[i] ^ x);
     }
-    memcpy(msg, k_pack_magic_label, label_len);
+    label[sizeof(enc)] = 0;
+    size_t label_len = sizeof(enc);
+    uint8_t msg[16 + 32];
+    memcpy(msg, label, label_len);
     memcpy(msg + label_len, raw, 32);
     uint32_t h = dynseed_fnv1a32(msg, label_len + 32);
+    {
+        volatile char *w = label;
+        for (size_t i = 0; i < sizeof(label); ++i) {
+            w[i] = 0;
+        }
+    }
     if (h == 0 || h == AXPK_MAGIC) {
         h ^= 0x5A5A5A5Au;
     }
@@ -343,7 +403,7 @@ static void synth_master(void)
     uint8_t plain[32];
     int got = 0;
 #if defined(__linux__) || defined(__ANDROID__)
-    int fd = open("/dev/urandom", O_RDONLY);
+    int fd = axvm_open_urandom();
     if (fd >= 0) {
         size_t r = 0;
         while (r < sizeof(plain)) {

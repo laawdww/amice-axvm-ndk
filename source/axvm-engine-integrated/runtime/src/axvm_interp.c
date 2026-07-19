@@ -906,6 +906,7 @@ static axvm_status_t axvm_run_impl(axvm_ctx_t *ctx)
         [AXOP_MRS_TPIDR]   = &&op_mrs_tpidr,
         [AXOP_UDIV_REG]    = &&op_udiv_reg,
         [AXOP_SDIV_REG]    = &&op_sdiv_reg,
+        [AXOP_CCMP]        = &&op_ccmp,
 
     };
 #if defined(__clang__)

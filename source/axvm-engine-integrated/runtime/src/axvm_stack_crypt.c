@@ -1,5 +1,6 @@
 #include "axvm_stack_crypt.h"
 #include "axvm_dynseed.h"
+#include "axvm_entropy.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -14,7 +15,7 @@
 static void fill_random(uint8_t *buf, size_t n)
 {
 #if defined(__linux__) || defined(__ANDROID__)
-    int fd = open("/dev/urandom", O_RDONLY);
+    int fd = axvm_open_urandom();
     if (fd >= 0) {
         size_t off = 0;
         while (off < n) {

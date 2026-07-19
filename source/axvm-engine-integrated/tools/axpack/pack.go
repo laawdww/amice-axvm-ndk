@@ -131,6 +131,37 @@ func buildPackAndStubs(funcs []fnInfo, encrypt, wiped bool, master []byte, permO
 	return out, stubBuf.Bytes(), doPerm
 }
 
+/* Replace plaintext mangled names with opaque axfNN (pack_name_sane); reseal MAC. */
+func scrubPackFuncNames(pack []byte) {
+	if len(pack) < 64 {
+		return
+	}
+	ver := binary.LittleEndian.Uint32(pack[4:8])
+	funcCount := binary.LittleEndian.Uint32(pack[12:16])
+	tableOff := binary.LittleEndian.Uint32(pack[16:20])
+	if tableOff != 64 || funcCount == 0 || funcCount > 128 {
+		return
+	}
+	recSize := uint32(axvmRecSizeV1)
+	if ver >= axpkVersionV2 {
+		recSize = axvmRecSizeV2
+	}
+	for i := uint32(0); i < funcCount; i++ {
+		rec := tableOff + i*recSize
+		if int(rec+recSize) > len(pack) {
+			break
+		}
+		nameOff := rec + 32
+		opaque := []byte(fmt.Sprintf("axf%02d", i+1))
+		for k := uint32(0); k < 36; k++ {
+			pack[nameOff+k] = 0
+		}
+		copy(pack[nameOff:], opaque)
+		binary.LittleEndian.PutUint32(pack[rec+4:], fnv1a32(opaque))
+	}
+	sealPackManifestMAC(pack)
+}
+
 func wrapBytecode(code []byte, entry uint32, bcFlags uint32) []byte {
 	pureSize := uint32(len(code))
 	if (bcFlags&axvmBCFlagAddrMap) != 0 && len(code) >= 21 {

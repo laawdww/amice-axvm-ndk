@@ -28,6 +28,8 @@ const (
 
 	axpkToken = 0x00000004
 
+	axpkSeedWrapped = 0x00000010 /* key_seed XOR MasterSeed KSED */
+
 	axpkVersionV2 = 0x00010002 /* per-func stub_meta (size + dispatch offset) */
 
 	axvmRecSizeV1 = 72
@@ -230,6 +232,10 @@ func main() {
 		flags := binary.LittleEndian.Uint32(pack[8:12])
 		binary.LittleEndian.PutUint32(pack[8:12], flags|axpkToken)
 		sealPackManifestMAC(pack)
+	}
+	scrubPackFuncNames(pack)
+	if *dynseed && len(master) >= 32 {
+		wrapPackKeySeed(pack, master)
 	}
 	outData, err := injectAndPatch(raw, ef, pack, stubs, funcs, nativeLeft, *wipe, doNativeWipe, *dep, *noPhdr, *noPatch, *noNorm, *integrity, *dynseed, *tokenEntry, rawSeed, master, useApkBind, *decoys, packMagic, *diskReady)
 	if err != nil {

@@ -411,6 +411,10 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 		}
 		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
 	}
+	/* CCMP / CCMN (reg or imm5) */
+	if (word&0x1FE00C00) == 0x1A400000 || (word&0x1FE00C00) == 0x1A400800 {
+		return liftCcmp(word, off)
+	}
 	if (word&0xFFE0FC00) == 0x9B207C00 || (word&0xFFE0FC00) == 0x9BA07C00 {
 		rd := byte(word & 0x1F)
 		rn := byte((word >> 5) & 0x1F)
@@ -432,6 +436,11 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 		}
 		bc = append(bc, opMulReg, rd, t0, t1)
 		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+	}
+	/* SMADDL / UMADDL / SMSUBL / UMSUBL (Ra may be non-XZR) */
+	if (word&0xFFE08000) == 0x9B200000 || (word&0xFFE08000) == 0x9B208000 ||
+		(word&0xFFE08000) == 0x9BA00000 || (word&0xFFE08000) == 0x9BA08000 {
+		return liftMaddl(word, off, cache)
 	}
 	if (word & 0x7FE0FC00) == 0x1B007C00 {
 		rd := byte(word & 0x1F)
@@ -721,13 +730,16 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 		}
 	}
 
-	/* LDUR/STUR — 0xF8x unscaled family */
+	/* LDUR/STUR / LDR/STR imm9 pre/post — 64 (F8) + 32 (B8) */
 	if (word&0xFFE00C00) == 0xF8400400 || (word&0xFFE00C00) == 0xF8000400 ||
-		(word&0xFFE00C00) == 0xF8400C00 || (word&0xFFE00C00) == 0xF8000C00 {
+		(word&0xFFE00C00) == 0xF8400C00 || (word&0xFFE00C00) == 0xF8000C00 ||
+		(word&0xFFE00C00) == 0xB8400400 || (word&0xFFE00C00) == 0xB8000400 ||
+		(word&0xFFE00C00) == 0xB8400C00 || (word&0xFFE00C00) == 0xB8000C00 {
 		store := (word & 0x00400000) == 0
 		return liftUnscaled(word, off, store)
 	}
-	if (word&0xFFE00C00) == 0xF8400000 || (word&0xFFE00C00) == 0xF8000000 {
+	if (word&0xFFE00C00) == 0xF8400000 || (word&0xFFE00C00) == 0xF8000000 ||
+		(word&0xFFE00C00) == 0xB8400000 || (word&0xFFE00C00) == 0xB8000000 {
 		store := (word & 0x00400000) == 0
 		return liftUnscaled(word, off, store)
 	}
@@ -1252,5 +1264,69 @@ func liftAddSubShiftedSetFlags(word uint32, off int, op byte, is32 bool, cache *
 		bc = appendMask32(bc, rd, cache)
 	}
 	bc = append(bc, cmpOp, rd, regXZR)
+	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+}
+
+/* CCMP/CCMN → AXOP_CCMP */
+func liftCcmp(word uint32, off int) (liftedInsn, error) {
+	rn := byte((word >> 5) & 0x1F)
+	rmOrImm := byte((word >> 16) & 0x1F)
+	cond := byte((word >> 12) & 0xF)
+	nzcvArm := byte(word & 0xF)
+	mode := (word >> 10) & 3
+	if mode != 0 && mode != 2 {
+		return liftedInsn{}, unsupportedInsn{off, word, "CCMP", "unsupported encoding"}
+	}
+	flags := byte(0)
+	if ((word >> 31) & 1) == 0 {
+		flags |= 1 /* is32 */
+	}
+	if mode == 2 {
+		flags |= 2 /* imm5 */
+	}
+	if ((word >> 30) & 1) == 0 {
+		flags |= 4 /* CCMN */
+	}
+	return liftedInsn{
+		bytes:   []byte{opCcmp, rn, rmOrImm, cond, nzcvArm, flags},
+		armOff:  off,
+		armSize: 4,
+	}, nil
+}
+
+/* SMADDL/UMADDL/SMSUBL/UMSUBL — widen Wn/Wm, MUL, then ADD/SUB Ra */
+func liftMaddl(word uint32, off int, cache *relocCache) (liftedInsn, error) {
+	rd := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	ra := byte((word >> 10) & 0x1F)
+	rm := byte((word >> 16) & 0x1F)
+	signed := (word & 0x00800000) == 0
+	isSub := ((word >> 15) & 1) != 0
+	t0, t1, ok := pickTwoScratch(rd, rn, rm, ra)
+	if !ok {
+		return liftedInsn{}, unsupportedInsn{off, word, "MADDL", "scratch registers unavailable"}
+	}
+	_ = cache
+	var bc []byte
+	bc = append(bc, opMovReg, t0, rn, opMovReg, t1, rm)
+	if signed {
+		bc = append(bc, opLslImm, t0, t0, 32, opAsrImm, t0, t0, 32)
+		bc = append(bc, opLslImm, t1, t1, 32, opAsrImm, t1, t1, 32)
+	} else {
+		bc = append(bc, opLslImm, t0, t0, 32, opLsrImm, t0, t0, 32)
+		bc = append(bc, opLslImm, t1, t1, 32, opLsrImm, t1, t1, 32)
+	}
+	bc = append(bc, opMulReg, t0, t0, t1)
+	if ra == regXZR {
+		if isSub {
+			bc = append(bc, opSubReg, rd, regXZR, t0)
+		} else {
+			bc = append(bc, opMovReg, rd, t0)
+		}
+	} else if isSub {
+		bc = append(bc, opSubReg, rd, ra, t0)
+	} else {
+		bc = append(bc, opAddReg, rd, ra, t0)
+	}
 	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
 }

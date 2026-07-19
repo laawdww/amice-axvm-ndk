@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 )
 
@@ -21,11 +23,23 @@ func dynseedMasterCipherV1(buf []byte, nonce []byte) {
 	}
 }
 
+/* HMAC-SHA256(nonce, "AXDS-MK2"||block) keystream — replaces weak multi-round XOR. */
 func dynseedMasterCipher(buf []byte, nonce []byte) {
-	for round := 0; round < 4; round++ {
-		for i := range buf {
-			k := nonce[i&15] ^ nonce[(i*7+3)&15] ^ byte(i*167+0x3B) ^ byte(round*31+17)
-			buf[i] ^= k
+	if len(nonce) < 16 {
+		return
+	}
+	key := nonce[:16]
+	for off, block := 0, 0; off < len(buf); off, block = off+32, block+1 {
+		msg := []byte{'A', 'X', 'D', 'S', '-', 'M', 'K', '2', byte(block)}
+		mac := hmac.New(sha256.New, key)
+		_, _ = mac.Write(msg)
+		ks := mac.Sum(nil)
+		n := len(buf) - off
+		if n > 32 {
+			n = 32
+		}
+		for i := 0; i < n; i++ {
+			buf[off+i] ^= ks[i]
 		}
 	}
 }

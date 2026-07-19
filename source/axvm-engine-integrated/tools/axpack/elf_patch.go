@@ -909,10 +909,9 @@ func isBusinessStaticProtectCandidate(lower string) bool {
 	 * ShuanQ URL params; VM corruption yields garbage query and biz_code=-2. */
 	for _, p := range []string{
 		"fake_", "grab_", "md5_update",
-		"wsp_", "apkverifylog", "tamper_", "notify_java",
+		"wsp_", "tamper_", "notify_java",
 		"signrate", "jd_jma_fake", "filterengine", "shuanq",
 		"anticheat_hooks_ready", "native_bypass_critical", "xorencrypt",
-		"activecrash", "active_crash",
 	} {
 		if strings.Contains(lower, p) {
 			return true
@@ -940,6 +939,22 @@ func isAppOwnedPlainCProtectCandidate(lower string) bool {
  * Business logic (fake_*, shuanq, md5 helpers, detection policy) MUST be protected. */
 func skipProtectByDefault(name string) bool {
 	lower := strings.ToLower(name)
+	/* Device-bisect toxic set for lingxitai-dada / libnative_core — keep native.
+	 * (login hot path, SIGSYS hosts/mtls, antiDebug, ActiveCrash logs, libunwind) */
+	for _, p := range []string{
+		"versioncheckerrormessage", "fetch_time_from_center",
+		"clearloginstate", "setauthverified",
+		"sendheartbeatonce", "applyheartbeatresult",
+		"canusefeatures", "versionnetworkguardhandle",
+		"needsmtls", "sq_blob5hosts", "7sq_blob5hosts",
+		"isfridadetected", "isxposeddetected", "isdebuggerattached",
+		"activecrash", "scheduleactivecrash", "apkverifylog",
+		"libunwind", "wsp_http_get",
+	} {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
 	/* Compiler-rt emulated TLS — ObfuscatedString::c_str uses thread_local via
 	 * __emutls_get_address → emutls_alloc/init. Virtualizing helpers leaves the
 	 * native get_address path returning garbage (fault @0x3f0). CRT must stay native. */

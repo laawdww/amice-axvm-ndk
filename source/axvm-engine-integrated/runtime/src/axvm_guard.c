@@ -44,13 +44,18 @@ static axvm_guard_state_t g_guard;
 static int g_guard_inited;
 
 /* ---------- 轻量字符串混淆（避免 .rodata 明文特征库） ---------- */
+/* volatile key/out：阻止编译器把 XOR 常量折叠成明文 .asciz（pass2 反编译已证实）。 */
 static void guard_xor_dec(char *out, const uint8_t *enc, size_t n, uint8_t k)
 {
+    volatile uint8_t vk = k;
+    volatile char *vout = out;
     for (size_t i = 0; i < n; ++i) {
-        out[i] = (char)(enc[i] ^ k);
+        vout[i] = (char)(enc[i] ^ vk);
     }
-    out[n] = '\0';
+    vout[n] = '\0';
 }
+
+#define GUARD_PATH_KEY ((uint8_t)0xA7u)
 
 /*
  * /proc/self/maps 单行的路径名列起点：首个 '/'（磁盘映射）或 '['（具名匿名区）。
@@ -99,7 +104,12 @@ static int maps_line_has_token(const char *line, const char *tok)
 static int scan_maps_tokens(const char *const *tokens, size_t ntok)
 {
     char line[512];
-    FILE *fp = fopen("/proc/self/maps", "r");
+    char maps_path[24];
+    static const uint8_t maps_enc[] = {
+        0x88, 0xd7, 0xd5, 0xc8, 0xc4, 0x88, 0xd4, 0xc2, 0xcb, 0xc1, 0x88, 0xca, 0xc6, 0xd7, 0xd4
+    };
+    guard_xor_dec(maps_path, maps_enc, sizeof(maps_enc), GUARD_PATH_KEY);
+    FILE *fp = fopen(maps_path, "r");
     if (!fp) {
         return 0;
     }
@@ -120,9 +130,20 @@ static int scan_maps_tokens(const char *const *tokens, size_t ntok)
 }
 
 /* ---------- /proc/self/status ---------- */
+static void guard_status_path(char out[24])
+{
+    static const uint8_t enc[] = {
+        0x88, 0xd7, 0xd5, 0xc8, 0xc4, 0x88, 0xd4, 0xc2, 0xcb, 0xc1, 0x88, 0xd4, 0xd3, 0xc6, 0xd3, 0xd2,
+        0xd4
+    };
+    guard_xor_dec(out, enc, sizeof(enc), GUARD_PATH_KEY);
+}
+
 static int read_status_field_int(const char *key, int *out)
 {
-    int fd = open("/proc/self/status", O_RDONLY);
+    char status_path[24];
+    guard_status_path(status_path);
+    int fd = open(status_path, O_RDONLY);
     if (fd < 0) {
         return 0;
     }
@@ -147,8 +168,14 @@ static int read_status_field_int(const char *key, int *out)
 
 static int probe_tracer_pid(void)
 {
+    char key[16];
+    /* "TracerPid:\t" ^ 0xA7 */
+    static const uint8_t key_enc[] = {
+        0xf3, 0xd5, 0xc6, 0xc4, 0xc2, 0xd5, 0xf7, 0xce, 0xc3, 0x9d, 0xae
+    };
+    guard_xor_dec(key, key_enc, sizeof(key_enc), GUARD_PATH_KEY);
     int pid = 0;
-    if (read_status_field_int("TracerPid:\t", &pid) && pid != 0) {
+    if (read_status_field_int(key, &pid) && pid != 0) {
         return 1;
     }
     return 0;
@@ -156,7 +183,13 @@ static int probe_tracer_pid(void)
 
 static int probe_trace_state(void)
 {
-    int fd = open("/proc/self/status", O_RDONLY);
+    char status_path[24];
+    char state_key[8];
+    guard_status_path(status_path);
+    /* "State:" ^ 0xA7 */
+    static const uint8_t state_enc[] = { 0xf4, 0xd3, 0xc6, 0xd3, 0xc2, 0x9d };
+    guard_xor_dec(state_key, state_enc, sizeof(state_enc), GUARD_PATH_KEY);
+    int fd = open(status_path, O_RDONLY);
     if (fd < 0) {
         return 0;
     }
@@ -167,7 +200,7 @@ static int probe_trace_state(void)
         return 0;
     }
     buf[n] = '\0';
-    char *p = strstr(buf, "State:");
+    char *p = strstr(buf, state_key);
     if (!p) {
         return 0;
     }
@@ -219,7 +252,8 @@ static int probe_maps_frida(void)
     /* key=0xfd: "frida", "frida-agent", "frida-gadget" */
     static const uint8_t e0[] = {0x9b, 0x8f, 0x94, 0x99, 0x9c};
     static const uint8_t e1[] = {0x9b, 0x8f, 0x94, 0x99, 0x9c, 0xd0, 0x9c, 0x9a, 0x98, 0x93, 0x89};
-    static const uint8_t e2[] = {0x9b, 0x8f, 0x94, 0x99, 0x9c, 0xd0, 0x9a, 0x9c, 0x98, 0x9c, 0x98, 0x89};
+    /* frida-gadget ^ 0xfd (was mistyped; fixed in pass2) */
+    static const uint8_t e2[] = {0x9b, 0x8f, 0x94, 0x99, 0x9c, 0xd0, 0x9a, 0x9c, 0x99, 0x9a, 0x98, 0x89};
     guard_xor_dec(a, e0, sizeof(e0), 0xfd);
     guard_xor_dec(b, e1, sizeof(e1), 0xfd);
     guard_xor_dec(c, e2, sizeof(e2), 0xfd);
@@ -390,46 +424,123 @@ static int prop_has_token(const char *name, const char *const *toks, size_t ntok
 /*
  * 强特征检测：仅命中 QEMU/goldfish/ranchu/vbox 等模拟器独有产物，
  * 真机（qcom/mt/exynos 等）全部落空，避免误杀。
+ * 路径/属性名均 XOR 混淆，避免 .rodata 明文特征。
  */
 static int probe_emulator(void)
 {
 #if defined(__ANDROID__)
+    char tmp[80];
     /* 1. 模拟器独有的内核/设备文件（真机不存在） */
-    static const char *paths[] = {
-        "/dev/goldfish_pipe",
-        "/dev/qemu_pipe",
-        "/system/lib/libc_malloc_debug_qemu.so",
-        "/sys/qemu_trace",
-        "/dev/socket/qemud",
-        "/dev/socket/baseband_genyd",
-        "/dev/socket/genyd",
+    static const uint8_t path0[] = {
+        0x88, 0xc3, 0xc2, 0xd1, 0x88, 0xc0, 0xc8, 0xcb, 0xc3, 0xc1, 0xce, 0xd4, 0xcf, 0xf8, 0xd7, 0xce,
+        0xd7, 0xc2
+    };
+    static const uint8_t path1[] = {
+        0x88, 0xc3, 0xc2, 0xd1, 0x88, 0xd6, 0xc2, 0xca, 0xd2, 0xf8, 0xd7, 0xce, 0xd7, 0xc2
+    };
+    static const uint8_t path2[] = {
+        0x88, 0xd4, 0xde, 0xd4, 0xd3, 0xc2, 0xca, 0x88, 0xcb, 0xce, 0xc5, 0x88, 0xcb, 0xce, 0xc5, 0xc4,
+        0xf8, 0xca, 0xc6, 0xcb, 0xcb, 0xc8, 0xc4, 0xf8, 0xc3, 0xc2, 0xc5, 0xd2, 0xc0, 0xf8, 0xd6, 0xc2,
+        0xca, 0xd2, 0x89, 0xd4, 0xc8
+    };
+    static const uint8_t path3[] = {
+        0x88, 0xd4, 0xde, 0xd4, 0x88, 0xd6, 0xc2, 0xca, 0xd2, 0xf8, 0xd3, 0xd5, 0xc6, 0xc4, 0xc2
+    };
+    static const uint8_t path4[] = {
+        0x88, 0xc3, 0xc2, 0xd1, 0x88, 0xd4, 0xc8, 0xc4, 0xcc, 0xc2, 0xd3, 0x88, 0xd6, 0xc2, 0xca, 0xd2,
+        0xc3
+    };
+    static const uint8_t path5[] = {
+        0x88, 0xc3, 0xc2, 0xd1, 0x88, 0xd4, 0xc8, 0xc4, 0xcc, 0xc2, 0xd3, 0x88, 0xc5, 0xc6, 0xd4, 0xc2,
+        0xc5, 0xc6, 0xc9, 0xc3, 0xf8, 0xc0, 0xc2, 0xc9, 0xde, 0xc3
+    };
+    static const uint8_t path6[] = {
+        0x88, 0xc3, 0xc2, 0xd1, 0x88, 0xd4, 0xc8, 0xc4, 0xcc, 0xc2, 0xd3, 0x88, 0xc0, 0xc2, 0xc9, 0xde,
+        0xc3
+    };
+    static const struct {
+        const uint8_t *enc;
+        size_t len;
+    } paths[] = {
+        { path0, sizeof(path0) }, { path1, sizeof(path1) }, { path2, sizeof(path2) },
+        { path3, sizeof(path3) }, { path4, sizeof(path4) }, { path5, sizeof(path5) },
+        { path6, sizeof(path6) },
     };
     for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
-        if (access(paths[i], F_OK) == 0) {
+        if (paths[i].len >= sizeof(tmp)) {
+            continue;
+        }
+        guard_xor_dec(tmp, paths[i].enc, paths[i].len, GUARD_PATH_KEY);
+        if (access(tmp, F_OK) == 0) {
             return 1;
         }
     }
     /* 2. ro.kernel.qemu == "1" */
     {
+        static const uint8_t prop_enc[] = {
+            0xd5, 0xc8, 0x89, 0xcc, 0xc2, 0xd5, 0xc9, 0xc2, 0xcb, 0x89, 0xd6, 0xc2, 0xca, 0xd2
+        };
+        char prop[24];
         char v[PROP_VALUE_MAX];
-        if (__system_property_get("ro.kernel.qemu", v) > 0 && v[0] == '1') {
+        guard_xor_dec(prop, prop_enc, sizeof(prop_enc), GUARD_PATH_KEY);
+        if (__system_property_get(prop, v) > 0 && v[0] == '1') {
             return 1;
         }
     }
     /* 3. ro.hardware / ro.product.* 含模拟器标识 */
-    static const char *hw_toks[] = {
-        "goldfish", "ranchu", "vbox", "ttVM", "nox", "android_x86", "windroye",
-    };
-    if (prop_has_token("ro.hardware", hw_toks,
-                       sizeof(hw_toks) / sizeof(hw_toks[0]))) {
-        return 1;
+    {
+        char hw_prop[16];
+        char t0[12], t1[8], t2[8], t3[8], t4[8], t5[16], t6[12];
+        static const uint8_t hw_enc[] = {
+            0xd5, 0xc8, 0x89, 0xcf, 0xc6, 0xd5, 0xc3, 0xd0, 0xc6, 0xd5, 0xc2
+        };
+        static const uint8_t e0[] = { 0xc0, 0xc8, 0xcb, 0xc3, 0xc1, 0xce, 0xd4, 0xcf };
+        static const uint8_t e1[] = { 0xd5, 0xc6, 0xc9, 0xc4, 0xcf, 0xd2 };
+        static const uint8_t e2[] = { 0xd1, 0xc5, 0xc8, 0xdf };
+        static const uint8_t e3[] = { 0xd3, 0xd3, 0xf1, 0xea };
+        static const uint8_t e4[] = { 0xc9, 0xc8, 0xdf };
+        static const uint8_t e5[] = {
+            0xc6, 0xc9, 0xc3, 0xd5, 0xc8, 0xce, 0xc3, 0xf8, 0xdf, 0x9f, 0x91
+        };
+        static const uint8_t e6[] = { 0xd0, 0xce, 0xc9, 0xc3, 0xd5, 0xc8, 0xde, 0xc2 };
+        guard_xor_dec(hw_prop, hw_enc, sizeof(hw_enc), GUARD_PATH_KEY);
+        guard_xor_dec(t0, e0, sizeof(e0), GUARD_PATH_KEY);
+        guard_xor_dec(t1, e1, sizeof(e1), GUARD_PATH_KEY);
+        guard_xor_dec(t2, e2, sizeof(e2), GUARD_PATH_KEY);
+        guard_xor_dec(t3, e3, sizeof(e3), GUARD_PATH_KEY);
+        guard_xor_dec(t4, e4, sizeof(e4), GUARD_PATH_KEY);
+        guard_xor_dec(t5, e5, sizeof(e5), GUARD_PATH_KEY);
+        guard_xor_dec(t6, e6, sizeof(e6), GUARD_PATH_KEY);
+        const char *hw_toks[] = { t0, t1, t2, t3, t4, t5, t6 };
+        if (prop_has_token(hw_prop, hw_toks, sizeof(hw_toks) / sizeof(hw_toks[0]))) {
+            return 1;
+        }
     }
-    static const char *model_toks[] = {
-        "Emulator", "Android SDK built for", "sdk_gphone", "vbox86",
-    };
-    if (prop_has_token("ro.product.model", model_toks,
-                       sizeof(model_toks) / sizeof(model_toks[0]))) {
-        return 1;
+    {
+        char model_prop[24];
+        char m0[12], m1[24], m2[16], m3[8];
+        static const uint8_t model_enc[] = {
+            0xd5, 0xc8, 0x89, 0xd7, 0xd5, 0xc8, 0xc3, 0xd2, 0xc4, 0xd3, 0x89, 0xca, 0xc8, 0xc3, 0xc2, 0xcb
+        };
+        static const uint8_t e0[] = { 0xe2, 0xca, 0xd2, 0xcb, 0xc6, 0xd3, 0xc8, 0xd5 };
+        static const uint8_t e1[] = {
+            0xe6, 0xc9, 0xc3, 0xd5, 0xc8, 0xce, 0xc3, 0x87, 0xf4, 0xe3, 0xec, 0x87, 0xc5, 0xd2, 0xce, 0xcb,
+            0xd3, 0x87, 0xc1, 0xc8, 0xd5
+        };
+        static const uint8_t e2[] = {
+            0xd4, 0xc3, 0xcc, 0xf8, 0xc0, 0xd7, 0xcf, 0xc8, 0xc9, 0xc2
+        };
+        static const uint8_t e3[] = { 0xd1, 0xc5, 0xc8, 0xdf, 0x9f, 0x91 };
+        guard_xor_dec(model_prop, model_enc, sizeof(model_enc), GUARD_PATH_KEY);
+        guard_xor_dec(m0, e0, sizeof(e0), GUARD_PATH_KEY);
+        guard_xor_dec(m1, e1, sizeof(e1), GUARD_PATH_KEY);
+        guard_xor_dec(m2, e2, sizeof(e2), GUARD_PATH_KEY);
+        guard_xor_dec(m3, e3, sizeof(e3), GUARD_PATH_KEY);
+        const char *model_toks[] = { m0, m1, m2, m3 };
+        if (prop_has_token(model_prop, model_toks,
+                           sizeof(model_toks) / sizeof(model_toks[0]))) {
+            return 1;
+        }
     }
     return 0;
 #else

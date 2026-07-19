@@ -17,7 +17,7 @@ axvm_stub_body:
     ldr     x6, [sp, #56]
     ldr     x7, [sp, #64]
     mov     w0, #1
-    /* a7 (caller x7) + sret (x8) for axvm_dispatch_ex */
+    /* a7 (caller x7) + sret (x8) for x7d */
     mov     x10, x8
     ldr     x9, [sp, #72]
     stp     x9, x10, [sp, #-16]!

@@ -22,7 +22,9 @@ option(AXVM_MEM_GUARD "VM mem_pool page seal/unseal anti-dump (module X)" ON)
 option(AXVM_STEXT "Track native .text wipe via AXPK_FLAG_WIPED (module O)" ON)
 option(AXVM_DISPATCH_PERM "SessionSeed-keyed computed-goto dispatch shuffle (module N)" ON)
 option(AXVM_HANDLER_POLY "SessionSeed XOR dispatch ptr + decoy handlers (Phase 3)" ON)
-option(AXVM_LAZY_PF "Page-fault augmented lazy bytecode decrypt (Phase 3)" ON)
+# OFF on Android by default: global SIGSEGV handler fights Dobby / LSPosed / aatxlla
+# (process dies with signal 11, often no tombstone). Soft lazy decrypt remains via AXVM_LAZY_DECRYPT.
+option(AXVM_LAZY_PF "Page-fault augmented lazy bytecode decrypt (Phase 3)" OFF)
 option(AXVM_SVC_ANTIDEBUG "Raw syscall anti-debug TracerPid probe (Phase 3)" ON)
 option(AXVM_WATCHDOG "Background guard watchdog thread (Phase 3)" ON)
 option(AXVM_JIT_HARDEN "JIT session-keyed hash + region seal (Phase 3)" ON)

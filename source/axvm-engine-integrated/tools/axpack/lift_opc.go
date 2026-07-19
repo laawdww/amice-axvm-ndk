@@ -105,6 +105,7 @@ const (
 	opFsqrtD   = 0xA5 /* u8 vd; u8 vn — FSQRT Dd, Dn */
 	opUdivReg  = 0xA6 /* u8 rd; u8 rn; u8 rm — UDIV Xd, Xn, Xm */
 	opSdivReg  = 0xA7 /* u8 rd; u8 rn; u8 rm — SDIV Xd, Xn, Xm */
+	opCcmp     = 0xA8 /* u8 rn; u8 rm_or_imm; u8 cond; u8 nzcv_arm; u8 flags */
 
 	arm64NOP = 0xD503201F
 	arm64RET = 0xD65F03C0

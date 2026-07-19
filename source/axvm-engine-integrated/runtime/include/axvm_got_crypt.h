@@ -15,7 +15,7 @@ int axvm_got_crypt_enabled(void);
 /* 注册 dispatch 目标并生成加密副本（明文指针不落 stub 可执行区） */
 void axvm_got_crypt_bind_dispatch(void *dispatch_plain);
 
-/* 运行时解密 dispatch 指针（axvm_got_gate 调用） */
+/* 运行时解密 dispatch 指针（x7g 调用） */
 void *axvm_got_crypt_resolve_dispatch(void);
 
 /*
@@ -27,7 +27,7 @@ int axvm_got_crypt_probe_stub_leak(const void *stub_slot16);
 int axvm_got_crypt_selftest(void);
 
 /* 模块 P：stub BL 跳板入口（ARM64） */
-uint64_t axvm_got_gate(void);
+uint64_t x7g(void);
 
 /* 扫描已加载模块首个 stub dispatch 槽是否泄露明文指针；-1=无模块 */
 int axvm_loader_got_leak_probe(void);

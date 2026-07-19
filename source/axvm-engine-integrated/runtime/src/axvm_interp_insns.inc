@@ -158,6 +158,66 @@
             if (st != AXVM_OK) return st;
             AXVM_OP_NEXT();
         }
+        AXVM_OP_BEGIN(AXOP_CCMP, op_ccmp) {
+            uint8_t rn = 0, rm = 0, cond = 0, nzcv_arm = 0, flags = 0;
+            st = read_u8(ctx, &cursor, &rn);
+            if (st != AXVM_OK) return st;
+            st = read_u8(ctx, &cursor, &rm);
+            if (st != AXVM_OK) return st;
+            st = read_u8(ctx, &cursor, &cond);
+            if (st != AXVM_OK) return st;
+            st = read_u8(ctx, &cursor, &nzcv_arm);
+            if (st != AXVM_OK) return st;
+            st = read_u8(ctx, &cursor, &flags);
+            if (st != AXVM_OK || !axvm_reg_src_ok(rn) || ((flags & 2u) == 0 && !axvm_reg_src_ok(rm)))
+                return AXVM_ERR_BAD_INSN;
+            if (!cond_pass(ctx->nzcv, cond)) {
+                /* ARM nzcv nibble (N|Z|C|V) → ctx (V|N|Z|C) */
+                uint32_t n = (nzcv_arm >> 3) & 1u;
+                uint32_t z = (nzcv_arm >> 2) & 1u;
+                uint32_t c = (nzcv_arm >> 1) & 1u;
+                uint32_t v = nzcv_arm & 1u;
+                ctx->nzcv = (ctx->nzcv & ~0xFu) | (v << 3) | (n << 2) | (z << 1) | c;
+                AXVM_OP_NEXT();
+            }
+            {
+                int is32 = (flags & 1u) != 0;
+                int is_imm = (flags & 2u) != 0;
+                int is_ccmn = (flags & 4u) != 0;
+                uint64_t vn = axvm_reg_read(ctx, rn);
+                uint64_t vm = is_imm ? (uint64_t)rm : axvm_reg_read(ctx, rm);
+                if (is32) {
+                    uint32_t a = (uint32_t)vn;
+                    uint32_t b = (uint32_t)vm;
+                    uint32_t res = is_ccmn ? (a + b) : (a - b);
+                    uint32_t n = (res >> 31) & 1u;
+                    uint32_t z = (res == 0) ? 1u : 0u;
+                    uint32_t c, v;
+                    if (is_ccmn) {
+                        c = (res < a) ? 1u : 0u;
+                        v = ((~(a ^ b) & (a ^ res)) >> 31) & 1u;
+                    } else {
+                        c = (a >= b) ? 1u : 0u;
+                        v = (((a ^ b) & (a ^ res)) >> 31) & 1u;
+                    }
+                    ctx->nzcv = (ctx->nzcv & ~0xFu) | (v << 3) | (n << 2) | (z << 1) | c;
+                } else {
+                    uint64_t res = is_ccmn ? (vn + vm) : (vn - vm);
+                    uint32_t n = (uint32_t)((res >> 63) & 1u);
+                    uint32_t z = (res == 0) ? 1u : 0u;
+                    uint32_t c, v;
+                    if (is_ccmn) {
+                        c = (res < vn) ? 1u : 0u;
+                        v = (uint32_t)(((~(vn ^ vm) & (vn ^ res)) >> 63) & 1u);
+                    } else {
+                        c = (vn >= vm) ? 1u : 0u;
+                        v = (uint32_t)((((vn ^ vm) & (vn ^ res)) >> 63) & 1u);
+                    }
+                    ctx->nzcv = (ctx->nzcv & ~0xFu) | (v << 3) | (n << 2) | (z << 1) | c;
+                }
+            }
+            AXVM_OP_NEXT();
+        }
         AXVM_OP_BEGIN(AXOP_MOVK, op_movk) {
             uint8_t rd = 0, hw = 0;
             uint16_t imm = 0;

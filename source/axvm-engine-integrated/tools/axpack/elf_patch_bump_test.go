@@ -71,7 +71,7 @@ func TestEncodeAdrpRoundTrip(t *testing.T) {
 func TestSkipProtectByDefaultRuntimeExports(t *testing.T) {
 	/* Aggressive single-SO must not virtualize embedded runtime entry points. */
 	for _, name := range []string{
-		"axvm_got_gate", "axvm_dispatch_ex", "axvm_invoke_native_asm",
+		"x7g", "x7d", "axvm_invoke_native_asm",
 		"axvm_embed_runtime_init", "Java_com_axvm_demo_VictimTest_victimAdd", "JNI_OnLoad",
 		"DobbyHook", "DobbyCodePatch", "ensure_all_detection_so_hooks",
 		"_Znwm", "_ZdlPv", "_ZnwmSt11align_val_t",

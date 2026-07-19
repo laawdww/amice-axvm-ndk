@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <string.h>
 
 #if defined(__linux__) || defined(__ANDROID__)
@@ -72,10 +73,24 @@ static int axvm_svc_openat(const char *path, int flags)
     return (int)r;
 }
 
+static void svc_xor_dec(char *out, const uint8_t *enc, size_t n, uint8_t k)
+{
+    volatile uint8_t vk = k;
+    volatile char *vout = out;
+    for (size_t i = 0; i < n; ++i) {
+        vout[i] = (char)(enc[i] ^ vk);
+    }
+    vout[n] = '\0';
+}
+
 static int svc_parse_tracer_pid(const char *buf, size_t n)
 {
-    static const char key[] = "TracerPid:\t";
-    size_t klen = sizeof(key) - 1u;
+    char key[16];
+    static const uint8_t key_enc[] = {
+        0xf3, 0xd5, 0xc6, 0xc4, 0xc2, 0xd5, 0xf7, 0xce, 0xc3, 0x9d, 0xae
+    };
+    svc_xor_dec(key, key_enc, sizeof(key_enc), 0xA7u);
+    size_t klen = sizeof(key_enc);
     if (n < klen) {
         return 0;
     }
@@ -96,7 +111,13 @@ static int svc_parse_tracer_pid(const char *buf, size_t n)
 
 int axvm_guard_svc_probe_tracer(void)
 {
-    int fd = axvm_svc_openat("/proc/self/status", O_RDONLY);
+    char status_path[24];
+    static const uint8_t status_enc[] = {
+        0x88, 0xd7, 0xd5, 0xc8, 0xc4, 0x88, 0xd4, 0xc2, 0xcb, 0xc1, 0x88, 0xd4, 0xd3, 0xc6, 0xd3, 0xd2,
+        0xd4
+    };
+    svc_xor_dec(status_path, status_enc, sizeof(status_enc), 0xA7u);
+    int fd = axvm_svc_openat(status_path, O_RDONLY);
     if (fd < 0) {
         return 0;
     }

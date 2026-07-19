@@ -13,6 +13,7 @@ extern "C" {
 #define AXPK_FLAG_ENCRYPTED 0x00000001u
 #define AXPK_FLAG_WIPED     0x00000002u
 #define AXPK_FLAG_TOKEN     0x00000004u /* VMPacker 风格 3 指令 token 入口 */
+#define AXPK_FLAG_SEED_WRAPPED 0x00000010u /* key_seed XOR'd with MasterSeed KSED subkey */
 
 #pragma pack(push, 1)
 typedef struct axvm_pack_hdr {
@@ -52,7 +53,7 @@ typedef struct axvm_func_rec {
 /* 由 libaxvm.so 导出 — 加固 SO 跳板调用.
  * a0..a6 in x1..x7; a7 + sret_x8 on stack (AAPCS64).
  * sret_x8 is AArch64 indirect-result (X8) for std::string / large struct returns. */
-uint64_t axvm_dispatch_ex(uint32_t func_id,
+uint64_t x7d(uint32_t func_id,
                           uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
                           uint64_t sret_x8);
@@ -61,7 +62,7 @@ uint64_t axvm_dispatch_ex(uint32_t func_id,
 void axvm_scan_proc_maps(void);
 void axvm_rescan_modules(void);
 void axvm_register_symbol(void *symbol);
-/* 由 libaxvm 在 JNI_OnLoad 登记 dispatch，避免 dlsym("axvm_dispatch_ex") 字符串指纹 */
+/* 由 libaxvm 在 JNI_OnLoad 登记 dispatch，避免 dlsym("x7d") 字符串指纹 */
 void axvm_register_dispatch(void *dispatch_fn);
 void axvm_module_load(const uint8_t *pack, size_t len, void *load_base);
 void axvm_module_load_ex(const uint8_t *pack, size_t len, void *load_base,
