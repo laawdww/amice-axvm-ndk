@@ -1,6 +1,6 @@
-# AXVM NDK one-click post-build protect (CMake)
+﻿# AXVM NDK one-click post-build protect (CMake)
 #
-# include(${AXVM_REPO}/cmake/AxvmProtect.cmake)
+# include(${AXVM_REPO}/source/axvm-engine-integrated/cmake/AxvmProtect.cmake)
 # axvm_ndk_protect(mylib
 #   SYMBOLS "foo,bar"          # optional; empty => aggressive + scan in script
 #   SINGLE_SO ON               # default ON

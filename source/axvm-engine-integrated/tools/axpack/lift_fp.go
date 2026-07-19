@@ -21,6 +21,16 @@ func emitFpMem(op byte, vt, rn byte, off int32) []byte {
 	}
 }
 
+func emitFpAddSubImm(rd, rn byte, imm int32) []byte {
+	if imm >= 0 {
+		return emitAddImm(rd, rn, imm)
+	}
+	return []byte{
+		opSubImm, rd, rn,
+		byte(-imm), byte((-imm) >> 8), byte((-imm) >> 16), byte((-imm) >> 24),
+	}
+}
+
 func emitFpRRR(op byte, vd, vn, vm byte) []byte {
 	return []byte{op, vd, vn, vm}
 }
@@ -49,6 +59,24 @@ func fpImmBits(imm8 uint32, isDouble bool) uint64 {
 
 /* tryDecodeFloatInsn 返回 true 表示已消费该机器指令 */
 func tryDecodeFloatInsn(word uint32, off int, fpUsed *bool) (liftedInsn, bool) {
+	/* AdvSIMD MOV Vd.16B, Vn.16B (ORR Vd,Vn,Vn) — copy low 64b in VM v[]. */
+	if matchMasked(word, 0xBFE0FC00, 0x4EA01C00) {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		vm := byte((word >> 16) & 0x1F)
+		if vn == vm {
+			markFP(fpUsed)
+			return liftedInsn{bytes: emitFpRRR(opFmovDReg, vd, vn, 0), armOff: off, armSize: 4}, true
+		}
+	}
+	/* MOVI Vd.2D, #0 (Q=1) / MOVI Dd, #0 (Q=0) — zero FP spill. */
+	if (word&0xFFFFFFE0) == 0x6F00E400 || (word&0xFFFFFFE0) == 0x2F00E400 {
+		vd := byte(word & 0x1F)
+		markFP(fpUsed)
+		bc := emitImm64(scratchReg0, 0)
+		bc = append(bc, opFmovDBits, vd, scratchReg0)
+		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, true
+	}
 	/* AdvSIMD FADD/FMUL/FMLA 2D — mask 含 don't-care 位，必须用 matchMasked */
 	if matchMasked(word, 0xBFE0FC00, 0x4E60D400) {
 		vd := byte(word & 0x1F)
@@ -216,8 +244,8 @@ func tryDecodeFloatInsn(word uint32, off int, fpUsed *bool) (liftedInsn, bool) {
 		markFP(fpUsed)
 		return liftedInsn{bytes: emitFpMem(opFldrD, vt, rn, uimm), armOff: off, armSize: 4}, true
 	}
-	/* STR D unsigned */
-	if (word & 0xFFC00000) == 0xFC000000 {
+	/* STR D unsigned — opc=00 size=11 encodes as 0xFD0xxxxx (not 0xFC0). */
+	if (word & 0xFFC00000) == 0xFD000000 {
 		vt := byte(word & 0x1F)
 		rn := byte((word >> 5) & 0x1F)
 		uimm := int32((word>>10)&0xFFF) * 8
@@ -232,16 +260,16 @@ func tryDecodeFloatInsn(word uint32, off int, fpUsed *bool) (liftedInsn, bool) {
 		markFP(fpUsed)
 		return liftedInsn{bytes: emitFpMem(opFldrS, vt, rn, uimm), armOff: off, armSize: 4}, true
 	}
-	/* STR S unsigned */
-	if (word & 0xFFC00000) == 0xBC000000 {
+	/* STR S unsigned — 0xBD0xxxxx */
+	if (word & 0xFFC00000) == 0xBD000000 {
 		vt := byte(word & 0x1F)
 		rn := byte((word >> 5) & 0x1F)
 		uimm := int32((word>>10)&0xFFF) * 4
 		markFP(fpUsed)
 		return liftedInsn{bytes: emitFpMem(opFstrS, vt, rn, uimm), armOff: off, armSize: 4}, true
 	}
-	/* LDUR/STUR D unscaled */
-	if (word&0xFFE00C00) == 0xFC400000 || (word&0xFFE00C00) == 0xFC400400 {
+	/* LDUR/STUR D unscaled (load bit22=1 → 0xFD4x, store → 0xFC4x) */
+	if (word&0xFFE00C00) == 0xFC400000 || (word&0xFFE00C00) == 0xFD400000 {
 		vt := byte(word & 0x1F)
 		rn := byte((word >> 5) & 0x1F)
 		simm := sext9((word >> 12) & 0x1FF)
@@ -254,7 +282,7 @@ func tryDecodeFloatInsn(word uint32, off int, fpUsed *bool) (liftedInsn, bool) {
 		return liftedInsn{bytes: emitFpMem(memOp, vt, rn, simm), armOff: off, armSize: 4}, true
 	}
 	/* LDUR/STUR S unscaled */
-	if (word&0xFFE00C00) == 0xBC400000 || (word&0xFFE00C00) == 0xBC400400 {
+	if (word&0xFFE00C00) == 0xBC400000 || (word&0xFFE00C00) == 0xBD400000 {
 		vt := byte(word & 0x1F)
 		rn := byte((word >> 5) & 0x1F)
 		simm := sext9((word >> 12) & 0x1FF)
@@ -265,6 +293,56 @@ func tryDecodeFloatInsn(word uint32, off int, fpUsed *bool) (liftedInsn, bool) {
 			memOp = opFstrS
 		}
 		return liftedInsn{bytes: emitFpMem(memOp, vt, rn, simm), armOff: off, armSize: 4}, true
+	}
+	/* LDR/STR D pre/post-index (bit24=0). bits[11:10]: 01=post, 11=pre. */
+	if (word&0xFFE00C00) == 0xFC400400 || (word&0xFFE00C00) == 0xFC000400 ||
+		(word&0xFFE00C00) == 0xFC400C00 || (word&0xFFE00C00) == 0xFC000C00 {
+		vt := byte(word & 0x1F)
+		rn := byte((word >> 5) & 0x1F)
+		simm := sext9((word >> 12) & 0x1FF)
+		pre := (word & 0xC00) == 0xC00
+		store := (word & 0x00400000) == 0
+		markFP(fpUsed)
+		memOp := byte(opFldrD)
+		if store {
+			memOp = opFstrD
+		}
+		var bc []byte
+		if pre && simm != 0 {
+			bc = append(bc, emitFpAddSubImm(rn, rn, simm)...)
+			bc = append(bc, emitFpMem(memOp, vt, rn, 0)...)
+		} else {
+			bc = append(bc, emitFpMem(memOp, vt, rn, 0)...)
+			if simm != 0 {
+				bc = append(bc, emitFpAddSubImm(rn, rn, simm)...)
+			}
+		}
+		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, true
+	}
+	/* LDR/STR S pre/post-index */
+	if (word&0xFFE00C00) == 0xBC400400 || (word&0xFFE00C00) == 0xBC000400 ||
+		(word&0xFFE00C00) == 0xBC400C00 || (word&0xFFE00C00) == 0xBC000C00 {
+		vt := byte(word & 0x1F)
+		rn := byte((word >> 5) & 0x1F)
+		simm := sext9((word >> 12) & 0x1FF)
+		pre := (word & 0xC00) == 0xC00
+		store := (word & 0x00400000) == 0
+		markFP(fpUsed)
+		memOp := byte(opFldrS)
+		if store {
+			memOp = opFstrS
+		}
+		var bc []byte
+		if pre && simm != 0 {
+			bc = append(bc, emitFpAddSubImm(rn, rn, simm)...)
+			bc = append(bc, emitFpMem(memOp, vt, rn, 0)...)
+		} else {
+			bc = append(bc, emitFpMem(memOp, vt, rn, 0)...)
+			if simm != 0 {
+				bc = append(bc, emitFpAddSubImm(rn, rn, simm)...)
+			}
+		}
+		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, true
 	}
 
 	/* AArch64 标量 double 三寄存器运算（0x1E 族，掩码对齐 LLVM） */
@@ -374,12 +452,6 @@ func tryDecodeFloatInsn(word uint32, off int, fpUsed *bool) (liftedInsn, bool) {
 		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, true
 	}
 
-	/* MOVI D #0 — 清零 v0 */
-	if (word & 0xFFFFFFE0) == 0x2F00E400 {
-		markFP(fpUsed)
-		return liftedInsn{bytes: []byte{opFmovDReg, 0, regXZR}, armOff: off, armSize: 4}, true
-	}
-
 	/* 旧版 0x1F 编码（部分工具链） */
 	if (word & 0xFFE0FC00) == 0x1F200400 {
 		vd := byte(word & 0x1F)
@@ -425,6 +497,38 @@ func tryDecodeFloatInsn(word uint32, off int, fpUsed *bool) (liftedInsn, bool) {
 		vm := byte((word >> 16) & 0x1F)
 		markFP(fpUsed)
 		return liftedInsn{bytes: emitFpRRR(opFmovDReg, vd, vm, 0), armOff: off, armSize: 4}, true
+	}
+	/* FMOV Dd, Xn — bit-pattern move (not SCVTF). */
+	if (word & 0xFFFFFC00) == 0x9E670000 {
+		vd := byte(word & 0x1F)
+		xn := byte((word >> 5) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: []byte{opFmovDBits, vd, xn}, armOff: off, armSize: 4}, true
+	}
+	/* FMOV Xd, Dn — bit-pattern move to GPR. */
+	if (word & 0xFFFFFC00) == 0x9E660000 {
+		xd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: []byte{opFmovXBits, xd, vn}, armOff: off, armSize: 4}, true
+	}
+	/* FSQRT Dd, Dn */
+	if (word & 0xFFFFFC00) == 0x1E61C000 {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: []byte{opFsqrtD, vd, vn}, armOff: off, armSize: 4}, true
+	}
+	/* FABS Dd, Dn — clear sign bit via GPR. */
+	if (word & 0xFFFFFC00) == 0x1E60C000 {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		markFP(fpUsed)
+		bc := []byte{opFmovXBits, scratchReg0, vn}
+		bc = append(bc, emitImm64(scratchReg1, ^uint64(1<<63))...)
+		bc = append(bc, opAndReg, scratchReg0, scratchReg0, scratchReg1)
+		bc = append(bc, opFmovDBits, vd, scratchReg0)
+		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, true
 	}
 	/* SCVTF D,X (64-bit int to double) */
 	if (word & 0xFF800000) == 0x1E620000 {

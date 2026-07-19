@@ -96,6 +96,23 @@ def axvmSoLooksPacked = { File so ->
     return false
 }
 
+/* Gradle 8.11+/9 removed Project.exec; use ProcessBuilder for compatibility. */
+def axvmRunCmd = { List<String> cmd, File workDir ->
+    def pb = new ProcessBuilder(cmd)
+    pb.directory(workDir)
+    pb.redirectErrorStream(true)
+    def proc = pb.start()
+    def out = new StringBuilder()
+    proc.inputStream.eachLine { line ->
+        out.append(line).append('\n')
+        logger.lifecycle(line)
+    }
+    def code = proc.waitFor()
+    if (code != 0) {
+        throw new GradleException("axvm command failed (${code}): ${cmd.join(' ')}\n${out}")
+    }
+}
+
 ext.axvmRunProtectOnMergedLibs = { String variantName ->
     def cfg = project.ext.axvmProtect
     def axpack = file(cfg.axpackExe)
@@ -138,18 +155,30 @@ ext.axvmRunProtectOnMergedLibs = { String variantName ->
         def workDir = inputSo.parentFile
         def report = new File(workDir, libName.toString() + ".axvm-scan.json")
         def syms = (cfg.symbols ?: "").toString().trim()
+        def level = (cfg.protectLevel ?: "aggressive").toString()
         if (cfg.autoScan || !syms) {
             logger.lifecycle("axvmProtect: scan ${inputSo}")
-            exec {
-                commandLine axpack.absolutePath, "-in", inputSo.absolutePath,
-                        "-scan", "-report", report.absolutePath
-                workingDir rootProject.projectDir
-            }
+            axvmRunCmd([
+                    axpack.absolutePath, "-in", inputSo.absolutePath,
+                    "-scan", "-report", report.absolutePath,
+                    "-protect-level", level
+            ], rootProject.projectDir)
             if (!syms && report.exists()) {
                 def json = new groovy.json.JsonSlurper().parse(report)
                 if (json.suggested_syms) {
-                    syms = json.suggested_syms.toString()
-                    logger.lifecycle("axvmProtect: suggested_syms len=${syms.length()}")
+                    def suggested = json.suggested_syms.toString()
+                    // Aggressive: NEVER feed suggested_syms as -syms — that caps coverage
+                    // to the short priority list (often ~14). axpack recollects all
+                    // protectable FUNC symbols when -syms is omitted.
+                    // Explicit cfg.symbols still wins (set before this block).
+                    if (level.equalsIgnoreCase("aggressive")) {
+                        logger.lifecycle("axvmProtect: aggressive — omit -syms (suggested_syms len=${suggested.length()}; full recollect)")
+                    } else if (suggested.length() > 4000) {
+                        logger.lifecycle("axvmProtect: suggested_syms len=${suggested.length()} (omit -syms; cmdline limit)")
+                    } else {
+                        syms = suggested
+                        logger.lifecycle("axvmProtect: suggested_syms len=${syms.length()}")
+                    }
                 }
             }
         }
@@ -159,16 +188,25 @@ ext.axvmRunProtectOnMergedLibs = { String variantName ->
                    "-in", inputSo.absolutePath,
                    "-out", tmpOut.absolutePath,
                    "-decoys", cfg.decoys.toString(),
-                   "-protect-level", (cfg.protectLevel ?: "aggressive").toString()]
+                   "-protect-level", level]
         if (syms) cmd += ["-syms", syms]
-        if (cfg.wipe) cmd += "-wipe"
-        if (cfg.encrypt) cmd += "-encrypt"
+        // axpack flag.Bool defaults wipe/encrypt to true — must pass =false to disable.
+        cmd += (cfg.wipe ? "-wipe=true" : "-wipe=false")
+        cmd += (cfg.encrypt ? "-encrypt=true" : "-encrypt=false")
         if (cfg.noPatch) cmd += "-no-patch"
         if (cfg.degrade) cmd += "-degrade"
         if (cfg.skipAtomic) cmd += "-skip-atomic"
         if (cfg.diskReady) cmd += "-disk-ready"
         if (cfg.dep != null) cmd += ["-dep", cfg.dep.toString()]
         if (cfg.stableStub) cmd += "-stable-stub"
+        // native-wipe encrypts non-lifted leftovers (stronger). Requires !diskReady.
+        // Denylist must exclude Dobby/hook engines so they never enter nativeLeft.
+        if (cfg.containsKey("nativeWipe") && cfg.nativeWipe == false) {
+            cmd += "-no-native-wipe"
+        } else if (cfg.diskReady) {
+            // disk-ready path cannot apply AXNW; explicit for log clarity
+            cmd += "-no-native-wipe"
+        }
 
         def pkg = (cfg.packageName ?: "").toString().trim()
         if (!pkg) {
@@ -192,10 +230,7 @@ ext.axvmRunProtectOnMergedLibs = { String variantName ->
         }
 
         logger.lifecycle("axvmProtect: ${cmd.join(' ')}")
-        exec {
-            commandLine cmd
-            workingDir rootProject.projectDir
-        }
+        axvmRunCmd(cmd, rootProject.projectDir)
         if (!tmpOut.exists()) {
             throw new GradleException("axpack did not produce ${tmpOut}")
         }
@@ -231,18 +266,22 @@ afterEvaluate {
     variantNames.unique().each { String variantName ->
         def mergeName = "merge${variantName.capitalize()}NativeLibs"
         def protectName = "axvmProtect${variantName.capitalize()}"
+        def stripName = "strip${variantName.capitalize()}DebugSymbols"
+        def packageName = "package${variantName.capitalize()}"
         tasks.register(protectName) {
             group = "axvm"
             description = "One-click axpack on ${variantName} merged native libs"
-            // Lazy string dependency — safe during configuration
             dependsOn mergeName
             doLast {
                 project.ext.axvmRunProtectOnMergedLibs(variantName)
             }
         }
+        // Wire strip/package to wait for protect (AGP dependents of merge race finalizedBy).
+        tasks.matching { it.name == stripName || it.name == packageName }.configureEach {
+            dependsOn(protectName)
+        }
     }
 
-    // Attach after graph is known (avoids AGP task-creation context errors)
     gradle.taskGraph.whenReady { graph ->
         graph.allTasks.each { t ->
             if (t.name ==~ /^merge.+NativeLibs$/) {

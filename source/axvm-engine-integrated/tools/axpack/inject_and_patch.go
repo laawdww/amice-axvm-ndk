@@ -25,7 +25,15 @@ func injectAndPatch(raw []byte, ef *elf.File, pack, stubs []byte, funcs, nativeL
 	if appendOff > int64(len(out)) {
 		out = append(out, make([]byte, appendOff-int64(len(out)))...)
 	}
-	packVaddr := vaddrForFileOffset(rx.Vaddr+rx.Memsz, appendOff, axvmLoadAlign)
+	/* Place pack AFTER RW. Squeezing into the RX/RW hole forces a multi-MB RW
+	 * vaddr bump + thousands of ADRP rewrites, which breaks fat Android SOs. */
+	packAfterRW := true
+	var packVaddr uint64
+	if packAfterRW {
+		packVaddr = vaddrForFileOffset(rw.Vaddr+rw.Memsz, appendOff, axvmLoadAlign)
+	} else {
+		packVaddr = vaddrForFileOffset(rx.Vaddr+rx.Memsz, appendOff, axvmLoadAlign)
+	}
 	packStart := int64(len(out))
 	out = append(out, pack...)
 	for int64(len(out))%16 != 0 {
@@ -41,6 +49,9 @@ func injectAndPatch(raw []byte, ef *elf.File, pack, stubs []byte, funcs, nativeL
 		return nil, fmt.Errorf("empty axvm segment")
 	}
 	ensureRoom := func(segLen int64) error {
+		if packAfterRW {
+			return nil
+		}
 		oldRwVaddr := rwVaddr
 		var bumpErr error
 		rwVaddr, bumpErr = ensureAxvmVirtualRoom(out, packVaddr, packVaddr+uint64(segLen), rwVaddr)
@@ -197,10 +208,15 @@ func injectAndPatch(raw []byte, ef *elf.File, pack, stubs []byte, funcs, nativeL
 		if dynseed {
 			tailReserve = 64 + 16
 		}
-		budget := int64(rwVaddr) - int64(packVaddr) - (int64(len(out)) - appendOff) - tailReserve
+		var budget int64
+		if packAfterRW {
+			budget = 64 << 20 /* appended after RW: no hole limit */
+		} else {
+			budget = int64(rwVaddr) - int64(packVaddr) - (int64(len(out)) - appendOff) - tailReserve
+		}
 		blob, got := buildDecoyPacksWithin(decoys, rawSeed, packMagic, budget)
 		if got < decoys {
-			fmt.Fprintf(os.Stderr, "axpack: decoys clamped %d -> %d (RX/RW gap 0x%X bytes)\n",
+			fmt.Fprintf(os.Stderr, "axpack: decoys clamped %d -> %d (budget 0x%X bytes)\n",
 				decoys, got, budget)
 		}
 		if len(blob) > 0 {

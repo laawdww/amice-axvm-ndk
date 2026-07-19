@@ -73,14 +73,61 @@ func TestSkipProtectByDefaultRuntimeExports(t *testing.T) {
 	for _, name := range []string{
 		"axvm_got_gate", "axvm_dispatch_ex", "axvm_invoke_native_asm",
 		"axvm_embed_runtime_init", "Java_com_axvm_demo_VictimTest_victimAdd", "JNI_OnLoad",
+		"DobbyHook", "DobbyCodePatch", "ensure_all_detection_so_hooks",
+		"_Znwm", "_ZdlPv", "_ZnwmSt11align_val_t",
+		"_Z13relo_relocateP10relo_ctx_tb",
+		"_Z30GenerateNormalTrampolineBuffermm",
+		"_ZN8OSMemory8AllocateEm16MemoryPermission",
+		"_ZN15MemoryAllocator17allocateExecBlockEj",
+		"make_addr_hookable",
 	} {
 		if !skipProtectByDefault(name) {
 			t.Fatalf("expected skip protect for %s", name)
 		}
 	}
-	for _, name := range []string{"victim_add", "victim_mul", "victim_check"} {
+	for _, name := range []string{
+		"victim_add", "victim_mul", "victim_check",
+		"notify_java_event",
+		"_ZN6shuanqL15heartbeatThreadEPv",
+	} {
 		if skipProtectByDefault(name) {
 			t.Fatalf("must still protect business symbol %s", name)
+		}
+	}
+	/* Object-returning / fn-pointer fakes stay native until JNI-return ABI is solid. */
+	for _, name := range []string{
+		"_ZL22fake_fn_for_jd_jma_symPKc",
+		"_ZL26fake_hook_for_java_mangledPKc",
+		"_ZL21fake_jni_empty_stringP7_JNIEnvP7_jclass",
+		"fake_signrate_check",
+	} {
+		if !skipProtectByDefault(name) {
+			t.Fatalf("expected skip protect for %s", name)
+		}
+	}
+	for _, name := range []string{
+		"_ZL13fake_jni_voidP7_JNIEnvP7_jclass",
+		"_ZL18fake_jni_detect_okP7_JNIEnvP7_jclass",
+	} {
+		if skipProtectByDefault(name) {
+			t.Fatalf("must still protect business symbol %s", name)
+		}
+	}
+	/* ApiClient stays native until map/string heap under VM is solid. */
+	for _, name := range []string{
+		"_ZN15ShuanQApiClient11sendRequestEv",
+	} {
+		if !skipProtectByDefault(name) {
+			t.Fatalf("expected skip protect for %s", name)
+		}
+	}
+	/* Owning pointer returns stay native until pointer-return ABI is solid. */
+	for _, name := range []string{
+		"grab_evinfo_build_dup", "mitm_scrub_dup",
+		"_ZN12_GLOBAL__N_18policy_okEv",
+	} {
+		if !skipProtectByDefault(name) {
+			t.Fatalf("expected skip protect for %s", name)
 		}
 	}
 }

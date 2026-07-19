@@ -7,6 +7,7 @@
 #include "axvm_stext.h"
 #include "axvm_integrity.h"
 #include "axvm_hmac.h"
+#include "axvm_reg.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -78,6 +79,7 @@ typedef struct axvm_func_slot {
     size_t      bc_size;
     void       *load_base;
     axvm_ctx_t *ctx;
+    pthread_mutex_t invoke_mu; /* one ctx per slot — serialize concurrent invokes */
     char        name[48];
 } axvm_func_slot_t;
 
@@ -397,7 +399,9 @@ static void patch_module_gots(axvm_module_t *mod)
                 n = write_stub_call(slot, dispatch);
             }
         } else {
-            /* Keep remaining slot bytes as NOP so fall-through hits epilogue. */
+            /* Keep remaining slot bytes as NOP. Stub layout after the 16B slot is:
+             *   B epilogue (keep X0) ; MOV X0,XZR (unpatched-only path)
+             * so BL return → NOPs → keep-B skips the zeroing. */
             uint32_t nop = 0xD503201Fu;
             for (int pi = 4; pi < 16; pi += 4) {
                 memcpy((uint8_t *)slot + pi, &nop, 4);
@@ -535,6 +539,13 @@ void axvm_module_load_ex(const uint8_t *pack, size_t len, void *load_base,
         sl->entry_pc = r->entry_pc;
         sl->bc_size = r->bc_size;
         sl->load_base = mod->load_base;
+        {
+            pthread_mutexattr_t attr;
+            pthread_mutexattr_init(&attr);
+            pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+            pthread_mutex_init(&sl->invoke_mu, &attr);
+            pthread_mutexattr_destroy(&attr);
+        }
         sl->bytecode = (uint8_t *)malloc(r->bc_size);
         if (!sl->bytecode) {
             continue;
@@ -595,7 +606,8 @@ static axvm_func_slot_t *find_func(uint32_t func_id)
 __attribute__((visibility("default")))
 uint64_t axvm_dispatch_ex(uint32_t func_id,
                           uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
-                          uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7)
+                          uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+                          uint64_t sret_x8)
 {
     static int s_depth;
     if (s_depth > 64) {
@@ -604,6 +616,7 @@ uint64_t axvm_dispatch_ex(uint32_t func_id,
     }
     s_depth++;
     uint64_t ret = 0;
+    int locked = 0;
     axvm_func_slot_t *fn = find_func(func_id);
     if (!fn || !fn->bytecode) {
         AXVM_LOGE("dispatch miss id=%u", func_id);
@@ -630,6 +643,10 @@ uint64_t axvm_dispatch_ex(uint32_t func_id,
         pthread_mutex_unlock(&g_ctx_create_mu);
     }
 
+    /* Shared ctx: concurrent JDGuard / hook threads must not interleave reset+run. */
+    pthread_mutex_lock(&fn->invoke_mu);
+    locked = 1;
+
     uint64_t args[8] = { a0, a1, a2, a3, a4, a5, a6, a7 };
     axvm_status_t gst = axvm_bridge_enter(fn->ctx);
     if (gst != AXVM_OK) {
@@ -637,8 +654,16 @@ uint64_t axvm_dispatch_ex(uint32_t func_id,
         goto out;
     }
     axvm_ctx_bind_args(fn->ctx, args, 8);
+    /* Mirror native_call.S: X8 is the AAPCS64 indirect result location. */
+    if (axvm_reg_write(fn->ctx, 8, sret_x8) != AXVM_OK) {
+        AXVM_LOGE("bind x8 fail id=%u", func_id);
+        goto out;
+    }
     ret = axvm_invoke(fn->ctx, fn->entry_pc);
 out:
+    if (locked) {
+        pthread_mutex_unlock(&fn->invoke_mu);
+    }
     s_depth--;
     return ret;
 }

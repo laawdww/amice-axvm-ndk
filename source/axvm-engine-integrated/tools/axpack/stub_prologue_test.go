@@ -35,13 +35,23 @@ func TestFPPrologueVariants(t *testing.T) {
 		lay := stubLayoutForTest(0, pid)
 		stub := genStubFPVariant(3, 0xCAFE, &lay)
 		disp := int(lay.dispatchOff)
-		if disp+16 > len(stub) {
+		if disp+24 > len(stub) {
 			t.Fatalf("fp prologue %d dispatch oob", pid)
 		}
-		for i := 0; i < 16; i += 4 {
+		/* Unpatched slot: B to zero-path, then NOPs; +16 keep-B, +20 MOV X0,XZR. */
+		if binary.LittleEndian.Uint32(stub[disp:disp+4]) != 0x14000005 {
+			t.Fatalf("fp prologue %d missing safe-zero B at dispatch", pid)
+		}
+		for i := 4; i < 16; i += 4 {
 			if binary.LittleEndian.Uint32(stub[disp+i:disp+i+4]) != arm64NOP {
 				t.Fatalf("fp prologue %d missing NOP at %d", pid, disp+i)
 			}
+		}
+		if binary.LittleEndian.Uint32(stub[disp+16:disp+20]) != 0x14000002 {
+			t.Fatalf("fp prologue %d missing keep-X0 B", pid)
+		}
+		if binary.LittleEndian.Uint32(stub[disp+20:disp+24]) != 0xAA1F03E0 {
+			t.Fatalf("fp prologue %d missing MOV X0,XZR", pid)
 		}
 	}
 }
@@ -81,7 +91,7 @@ func TestPrologueMetaRoundtrip(t *testing.T) {
 func TestClassicPrologueMatchesLegacy(t *testing.T) {
 	lay := stubLayoutForTest(0, 0)
 	legacy := composeStubVariant(&lay, 1, 0, emitIntPrologue,
-		[]uint32{0xA8C67BFD, arm64RET}, 0x9E3779B97F4A7C15)
+		[]uint32{0x910043FF, 0xA8C67BFD, arm64RET}, 0x9E3779B97F4A7C15, true)
 	stub := genStub(1, 0)
 	if !bytes.Equal(legacy, stub) {
 		t.Fatalf("prologue0 drift from legacy genStub")

@@ -44,8 +44,8 @@ axvm_aapcs64_trampoline:
     .global axvm_entry_token
     .type axvm_entry_token, %function
 /*
- * VMPacker 风格 token 入口：X16=token，X0-X7=调用方参数。
- * 保存参数后 w0=func_id，x1-x7 移位传递，BL axvm_dispatch_ex。
+ * VMPacker 风格 token 入口：X16=token，X0-X7=调用方参数，X8=sret。
+ * 保存参数后 w0=func_id，x1-x7=caller x0-x6，栈上 a7+sret_x8，BL axvm_dispatch_ex。
  */
 axvm_entry_token:
     stp     x29, x30, [sp, #-96]!
@@ -54,6 +54,7 @@ axvm_entry_token:
     stp     x2, x3, [sp, #32]
     stp     x4, x5, [sp, #48]
     stp     x6, x7, [sp, #64]
+    str     x8, [sp, #80]
     ldr     x1, [sp, #16]
     ldr     x2, [sp, #24]
     ldr     x3, [sp, #32]
@@ -62,7 +63,11 @@ axvm_entry_token:
     ldr     x6, [sp, #56]
     ldr     x7, [sp, #64]
     and     w0, w16, #0xFFF
+    ldr     x9, [sp, #72]          /* caller x7 → a7 */
+    ldr     x10, [sp, #80]         /* caller x8 → sret */
+    stp     x9, x10, [sp, #-16]!
     bl      axvm_dispatch_ex
+    add     sp, sp, #16
     ldp     x29, x30, [sp], #96
     ret
     .size axvm_entry_token, .-axvm_entry_token

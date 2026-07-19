@@ -46,6 +46,22 @@ func addDTNeeded(raw []byte, dep string) ([]byte, error) {
 		return nil, fmt.Errorf("addDTNeeded: .dynamic oob")
 	}
 	dynstrOff := int(dynstrSec.Offset)
+	oldStrEnd := dynstrOff + int(dynstrSec.Size)
+	/* .dynstr is often packed flush against .gnu.version — never clobber the next section. */
+	nextSecOff := len(out)
+	for _, sec := range ef.Sections {
+		if sec == nil || sec.Offset == 0 {
+			continue
+		}
+		off := int(sec.Offset)
+		if off >= oldStrEnd && off < nextSecOff {
+			nextSecOff = off
+		}
+	}
+	if dynstrOff+len(dynstr) > nextSecOff {
+		return nil, fmt.Errorf("addDTNeeded: no room to grow .dynstr by %d bytes (would clobber next section at 0x%x); link -l%s at build time or use -dep -",
+			len(dynstr)-int(dynstrSec.Size), nextSecOff, dep)
+	}
 	if dynstrOff+len(dynstr) > len(out) {
 		grow := dynstrOff + len(dynstr) - len(out)
 		out = append(out, make([]byte, grow)...)

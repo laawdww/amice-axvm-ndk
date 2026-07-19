@@ -153,6 +153,16 @@
             if (st != AXVM_OK) return st;
             AXVM_OP_NEXT();
         }
+        AXVM_OP_BEGIN(AXOP_FSQRT_D, op_fsqrt_d) {
+            uint8_t vd = 0, vn = 0;
+            st = read_u8(ctx, &cursor, &vd);
+            if (st != AXVM_OK) return st;
+            st = read_u8(ctx, &cursor, &vn);
+            if (st != AXVM_OK || !axvm_freg_dst_ok(vd) || !axvm_freg_src_ok(vn)) return AXVM_ERR_BAD_INSN;
+            st = axvm_freg_write(ctx, vd, sqrt(axvm_freg_read(ctx, vn)));
+            if (st != AXVM_OK) return st;
+            AXVM_OP_NEXT();
+        }
         AXVM_OP_BEGIN(AXOP_FCMP_D, op_fcmp_d) {
             uint8_t vn = 0, vm = 0;
             st = read_u8(ctx, &cursor, &vn);

@@ -369,6 +369,23 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 		}
 		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
 	}
+	/* UDIV / SDIV */
+	if (word&0x7FE0FC00) == 0x1AC00800 || (word&0x7FE0FC00) == 0x1AC00C00 {
+		rd := byte(word & 0x1F)
+		rn := byte((word >> 5) & 0x1F)
+		rm := byte((word >> 16) & 0x1F)
+		is32 := ((word >> 31) & 1) == 0
+		isSigned := ((word >> 10) & 1) != 0
+		op := byte(opUdivReg)
+		if isSigned {
+			op = opSdivReg
+		}
+		bc := []byte{op, rd, rn, rm}
+		if is32 {
+			bc = appendMask32(bc, rd, cache)
+		}
+		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+	}
 	if (word&0xFFE0FC00) == 0x9B207C00 || (word&0xFFE0FC00) == 0x9BA07C00 {
 		rd := byte(word & 0x1F)
 		rn := byte((word >> 5) & 0x1F)
@@ -749,6 +766,12 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 
 	if ch, ok := tryDecodeFloatInsn(word, off, fpUsed); ok {
 		return ch, nil
+	}
+
+	/* MRS Xt, TPIDR_EL0 — stack canary / emutls base (0xD53BD040 | Rt) */
+	if (word & 0xFFFFFFE0) == 0xD53BD040 {
+		rd := byte(word & 0x1F)
+		return liftedInsn{bytes: []byte{opMrsTpidr, rd}, armOff: off, armSize: 4}, nil
 	}
 
 	return liftedInsn{}, unsupportedInsn{off, word, "UNKNOWN", "add to lift_a64.go or exclude symbol"}

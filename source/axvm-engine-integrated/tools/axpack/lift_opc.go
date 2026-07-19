@@ -101,6 +101,10 @@ const (
 	opUmovD   = 0x97
 	opInsD    = 0x98
 	opVfma4S  = 0xA3 /* vd += vn * vm (4S) */
+	opMrsTpidr = 0xA4 /* u8 rd — MRS rd, TPIDR_EL0 */
+	opFsqrtD   = 0xA5 /* u8 vd; u8 vn — FSQRT Dd, Dn */
+	opUdivReg  = 0xA6 /* u8 rd; u8 rn; u8 rm — UDIV Xd, Xn, Xm */
+	opSdivReg  = 0xA7 /* u8 rd; u8 rn; u8 rm — SDIV Xd, Xn, Xm */
 
 	arm64NOP = 0xD503201F
 	arm64RET = 0xD65F03C0

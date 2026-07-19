@@ -152,6 +152,10 @@ typedef enum axvm_opcode {
     AXOP_INS_D       = 0x98, /* u8 vd; u8 vd_idx; u8 vn; u8 vn_idx */
     AXOP_VFMLA_4S    = 0xA3, /* vd += vn * vm (4S) */
 #endif
+    AXOP_MRS_TPIDR   = 0xA4, /* u8 rd — MRS rd, TPIDR_EL0 (TLS base) */
+    AXOP_FSQRT_D     = 0xA5, /* u8 vd; u8 vn — FSQRT Dd, Dn (AXVM_FLOAT_VM) */
+    AXOP_UDIV_REG    = 0xA6, /* u8 rd; u8 rn; u8 rm — unsigned divide */
+    AXOP_SDIV_REG    = 0xA7, /* u8 rd; u8 rn; u8 rm — signed divide */
 } axvm_opcode_t;
 
 typedef enum axvm_cond {

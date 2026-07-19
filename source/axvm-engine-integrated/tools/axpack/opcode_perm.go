@@ -94,9 +94,11 @@ func opOperandLen(op byte) (int, bool) {
 		return 3, true
 	case opInsD:
 		return 4, true
-	case opFcmpD, opFmovDReg, opFmovXBits, opFmovDBits, opFmovDX, opFcvtDS:
+	case opFcmpD, opFmovDReg, opFmovXBits, opFmovDBits, opFmovDX, opFcvtDS, opFsqrtD:
 		return 2, true
 	case opFcvtzsD:
+		return 3, true
+	case opUdivReg, opSdivReg:
 		return 3, true
 	}
 	return 0, false

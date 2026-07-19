@@ -19,7 +19,7 @@ func chunkWritesScratch(code []byte) bool {
 		case opLdri64, opLdri64Vaddr,
 			opAddImm, opSubImm,
 			opAddReg, opSubReg, opAndReg, opOrrReg, opEorReg,
-			opLslImm, opLsrImm, opMulReg, opCselReg, opMovk,
+			opLslImm, opLsrImm, opMulReg, opUdivReg, opSdivReg, opCselReg, opMovk,
 			opLdrU64, opLdrU32, opLdurU64, opLdurU32, opLdrU8, opLdrU16,
 			opMovReg, opMvnReg, opAsrImm, opLdrRegOff, opZext32,
 			opFmovXBits, opFcvtzsD:

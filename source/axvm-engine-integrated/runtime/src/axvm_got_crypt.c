@@ -75,7 +75,8 @@ int axvm_got_crypt_selftest(void)
 {
     extern uint64_t axvm_dispatch_ex(uint32_t func_id,
                                      uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
-                                     uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);
+                                     uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+                                     uint64_t sret_x8);
     axvm_got_crypt_bind_dispatch((void *)(uintptr_t)axvm_dispatch_ex);
     void *plain = axvm_got_crypt_resolve_dispatch();
     if (plain != (void *)(uintptr_t)axvm_dispatch_ex) {
@@ -91,19 +92,21 @@ int axvm_got_crypt_selftest(void)
 #if defined(__aarch64__)
 extern uint64_t axvm_dispatch_ex(uint32_t func_id,
                                  uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
-                                 uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);
+                                 uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+                                 uint64_t sret_x8);
 
 uint64_t axvm_got_gate_dispatch(uint32_t func_id,
                                 uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
-                                uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7)
+                                uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+                                uint64_t sret_x8)
 {
     void *fn = axvm_got_crypt_resolve_dispatch();
     if (!fn) {
-        return axvm_dispatch_ex(func_id, a0, a1, a2, a3, a4, a5, a6, a7);
+        return axvm_dispatch_ex(func_id, a0, a1, a2, a3, a4, a5, a6, a7, sret_x8);
     }
     typedef uint64_t (*disp_fn_t)(uint32_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                                  uint64_t, uint64_t, uint64_t, uint64_t);
-    return ((disp_fn_t)fn)(func_id, a0, a1, a2, a3, a4, a5, a6, a7);
+                                  uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+    return ((disp_fn_t)fn)(func_id, a0, a1, a2, a3, a4, a5, a6, a7, sret_x8);
 }
 #endif /* __aarch64__ */
 

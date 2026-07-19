@@ -61,6 +61,7 @@ axvm_ndk_protect(mylib PACKAGE com.example.app APK ${CMAKE_SOURCE_DIR}/app.apk)
 - `artifacts/libaxvm.so` — Android arm64 runtime library (dual-SO mode).
 - `artifacts/libvmtest.full.axvm.so` — fully protected regression SO.
 - `artifacts/amice-axvm-test.apk` — Android APK regression test.
+- `artifacts/amice-ollvm-ndk.zip` — **独立 AMICE/OLLVM NDK 包**（仅混淆，无 AXVM；`protect-amice-ndk.ps1` + `amice.dll`）。
 - `artifacts/amice-axvm-ndk-oneclick.zip` — **NDK 一键保护分发包**（`protect-ndk.ps1` + `axpack.exe` + runtime + Gradle/CMake）。
 - `artifacts/amice-win-ndk-ir-axvm.zip` — Windows AMICE/NDK/IR integration package（旧包）。
 - `artifacts/amice-pass-test.zip` — AMICE pass smoke-test package.

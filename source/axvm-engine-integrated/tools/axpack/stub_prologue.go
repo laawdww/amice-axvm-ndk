@@ -142,6 +142,18 @@ func emitIntReloadArgs(buf []byte) []byte {
 	return buf
 }
 
+/* Push a7 (caller x7 @ [sp,#72]) and sret (X8) for axvm_dispatch_ex stack args. */
+func emitStubStackArgs(buf []byte, intFrame bool) []byte {
+	buf = appendU32(buf, 0xAA0803EA) // MOV x10, x8  (sret)
+	if intFrame {
+		buf = appendU32(buf, 0xF94027E9) // LDR x9, [sp, #72]  (caller x7)
+	} else {
+		buf = appendU32(buf, 0xAA1F03E9) // MOV x9, xzr
+	}
+	buf = appendU32(buf, 0xA9BF2BE9) // STP x9, x10, [sp, #-16]!
+	return buf
+}
+
 /* FP stub：8 种 prologue 变体 */
 
 func emitFPPrologue(pid uint8, buf []byte) []byte {
@@ -289,7 +301,7 @@ func stubPrologueID(lay stubLayout) uint8 { return lay.variant >> 4 }
 func stubLayoutIdx(lay stubLayout) uint8  { return lay.variant & 0x0F }
 func stubEarlyNopPad(lay stubLayout) bool { return (stubPrologueID(lay) & 1) != 0 }
 
-func composeStubVariant(lay *stubLayout, funcID uint32, padSeed uint64, prologue func(uint8, []byte) []byte, epilogue []uint32, padSeedMix uint64) []byte {
+func composeStubVariant(lay *stubLayout, funcID uint32, padSeed uint64, prologue func(uint8, []byte) []byte, epilogue []uint32, padSeedMix uint64, intFrame bool) []byte {
 	buf := make([]byte, 0, lay.size)
 	disp := int(lay.dispatchOff)
 	pid := stubPrologueID(*lay)
@@ -307,8 +319,11 @@ func composeStubVariant(lay *stubLayout, funcID uint32, padSeed uint64, prologue
 		buf = appendMOVK(buf, 0, (funcID>>16)&0xFFFF, 16)
 	}
 
-	/* dispatch 槽必须在 prologue+func_id 之后，否则运行时 BLR patch 会跳过 MOVZ x0。 */
-	if need := (len(buf) + 15) &^ 15; need > disp {
+	/* a7 + X8 sret on stack immediately before dispatch BL */
+	setup := emitStubStackArgs(nil, intFrame)
+
+	/* dispatch 槽必须在 prologue+func_id+stack-args 之后，否则运行时 BLR patch 会跳过 MOVZ x0。 */
+	if need := (len(buf) + len(setup) + 15) &^ 15; need > disp {
 		disp = need
 	}
 	if disp > 255 {
@@ -316,15 +331,50 @@ func composeStubVariant(lay *stubLayout, funcID uint32, padSeed uint64, prologue
 	}
 	lay.dispatchOff = uint16(disp)
 
+	for len(buf)+len(setup) < disp {
+		buf = appendU32(buf, arm64NOP)
+	}
+	buf = append(buf, setup...)
 	for len(buf) < disp {
 		buf = appendU32(buf, arm64NOP)
 	}
-	for len(buf) < disp+16 {
-		buf = appendU32(buf, arm64NOP)
-	}
+
+	/* Dispatch slot (16B) + keep/zero bridge.
+	 *
+	 * Unpatched (pre-runtime): B to zero-path so fallthrough cannot return
+	 * func_id in X0 (ART JniDecodeReferenceResult SEGV @0x40 / x0=0x41).
+	 * Patched BL (4B)+NOPs: returns to slot+4, walks NOPs, hits keep B → epilogue.
+	 * Patched absolute call (16B BLR): returns to slot+16 keep B → epilogue.
+	 *
+	 * Layout at disp:
+	 *   +0  B zero          (or BL / MOVZ..BLR once patched)
+	 *   +4  NOP
+	 *   +8  NOP
+	 *   +12 NOP
+	 *   +16 B epilogue      (keep X0)
+	 *   +20 MOV X0, XZR     (safe null return)
+	 *   +24 epilogue...
+	 */
+	const (
+		arm64BZero     = 0x14000005 // B .+20 → MOV X0,XZR
+		arm64BEpilogue = 0x14000002 // B .+8  → epilogue
+		arm64MovX0Xzr  = 0xAA1F03E0 // MOV X0, XZR
+	)
+	buf = appendU32(buf, arm64BZero)
+	buf = appendU32(buf, arm64NOP)
+	buf = appendU32(buf, arm64NOP)
+	buf = appendU32(buf, arm64NOP)
+	buf = appendU32(buf, arm64BEpilogue)
+	buf = appendU32(buf, arm64MovX0Xzr)
 
 	for _, ins := range epilogue {
 		buf = appendU32(buf, ins)
+	}
+
+	/* Grow stub if keep/zero bridge + epilogue exceeded the layout template. */
+	need := len(buf)
+	if need > int(lay.size) {
+		lay.size = uint16((need + 15) &^ 15)
 	}
 
 	x := padSeed ^ (uint64(funcID) * padSeedMix)

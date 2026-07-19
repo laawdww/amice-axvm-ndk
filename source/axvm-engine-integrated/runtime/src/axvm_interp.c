@@ -32,6 +32,8 @@
 
 #include <string.h>
 
+#include <math.h>
+
 /* 模块 G：取指/译码懒解密钩子；关闭 AXVM_LAZY_DECRYPT 时零开销降级 */
 #if defined(AXVM_LAZY_DECRYPT) && AXVM_LAZY_DECRYPT
 #define LAZY_ENSURE(ctx, off, w)                                               \
@@ -880,6 +882,7 @@ static axvm_status_t axvm_run_impl(axvm_ctx_t *ctx)
         [AXOP_FSUB_D]      = &&op_fsub_d,
         [AXOP_FMUL_D]      = &&op_fmul_d,
         [AXOP_FDIV_D]      = &&op_fdiv_d,
+        [AXOP_FSQRT_D]     = &&op_fsqrt_d,
         [AXOP_FCMP_D]      = &&op_fcmp_d,
         [AXOP_FMOV_D_REG]  = &&op_fmov_d_reg,
         [AXOP_FMOV_X_BITS] = &&op_fmov_x_bits,
@@ -900,6 +903,9 @@ static axvm_status_t axvm_run_impl(axvm_ctx_t *ctx)
         [AXOP_INS_D]    = &&op_ins_d,
 #endif
         [AXOP_JUNK]        = &&op_junk,
+        [AXOP_MRS_TPIDR]   = &&op_mrs_tpidr,
+        [AXOP_UDIV_REG]    = &&op_udiv_reg,
+        [AXOP_SDIV_REG]    = &&op_sdiv_reg,
 
     };
 #if defined(__clang__)

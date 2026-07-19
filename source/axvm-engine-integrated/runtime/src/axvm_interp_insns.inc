@@ -130,6 +130,34 @@
             if (st != AXVM_OK) return st;
             AXVM_OP_NEXT();
         }
+        AXVM_OP_BEGIN(AXOP_UDIV_REG, op_udiv_reg) {
+            uint8_t rd = 0, rn = 0, rm = 0;
+            uint64_t den = 0;
+            st = read_u8(ctx, &cursor, &rd);
+            if (st != AXVM_OK) return st;
+            st = read_u8(ctx, &cursor, &rn);
+            if (st != AXVM_OK) return st;
+            st = read_u8(ctx, &cursor, &rm);
+            if (st != AXVM_OK || !axvm_reg_dst_ok(rd) || !axvm_reg_src_ok(rn) || !axvm_reg_src_ok(rm)) return AXVM_ERR_BAD_INSN;
+            den = axvm_reg_read(ctx, rm);
+            st = axvm_reg_write(ctx, rd, den == 0 ? 0 : (axvm_reg_read(ctx, rn) / den));
+            if (st != AXVM_OK) return st;
+            AXVM_OP_NEXT();
+        }
+        AXVM_OP_BEGIN(AXOP_SDIV_REG, op_sdiv_reg) {
+            uint8_t rd = 0, rn = 0, rm = 0;
+            int64_t den = 0;
+            st = read_u8(ctx, &cursor, &rd);
+            if (st != AXVM_OK) return st;
+            st = read_u8(ctx, &cursor, &rn);
+            if (st != AXVM_OK) return st;
+            st = read_u8(ctx, &cursor, &rm);
+            if (st != AXVM_OK || !axvm_reg_dst_ok(rd) || !axvm_reg_src_ok(rn) || !axvm_reg_src_ok(rm)) return AXVM_ERR_BAD_INSN;
+            den = (int64_t)axvm_reg_read(ctx, rm);
+            st = axvm_reg_write(ctx, rd, den == 0 ? 0 : (uint64_t)((int64_t)axvm_reg_read(ctx, rn) / den));
+            if (st != AXVM_OK) return st;
+            AXVM_OP_NEXT();
+        }
         AXVM_OP_BEGIN(AXOP_MOVK, op_movk) {
             uint8_t rd = 0, hw = 0;
             uint16_t imm = 0;
@@ -350,6 +378,20 @@
             st = read_u8(ctx, &cursor, &rd);
             if (st != AXVM_OK || rd > AXVM_REG_XZR) return AXVM_ERR_BAD_INSN;
             st = axvm_reg_write(ctx, rd, (uint32_t)axvm_reg_read(ctx, rd));
+            if (st != AXVM_OK) return st;
+            AXVM_OP_NEXT();
+        }
+        AXVM_OP_BEGIN(AXOP_MRS_TPIDR, op_mrs_tpidr) {
+            uint8_t rd = 0;
+            uint64_t tp = 0;
+            st = read_u8(ctx, &cursor, &rd);
+            if (st != AXVM_OK || rd > AXVM_REG_XZR) return AXVM_ERR_BAD_INSN;
+#if defined(__aarch64__)
+            __asm__ __volatile__("mrs %0, tpidr_el0" : "=r"(tp));
+#else
+            tp = 0;
+#endif
+            st = axvm_reg_write(ctx, rd, tp);
             if (st != AXVM_OK) return st;
             AXVM_OP_NEXT();
         }

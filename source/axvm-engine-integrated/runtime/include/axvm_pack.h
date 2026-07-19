@@ -49,10 +49,13 @@ typedef struct axvm_func_rec {
 #define AXVM_REC_SIZE_V1 72u
 #define AXVM_REC_SIZE_V2 76u
 
-/* 由 libaxvm.so 导出 — 加固 SO 跳板调用 */
+/* 由 libaxvm.so 导出 — 加固 SO 跳板调用.
+ * a0..a6 in x1..x7; a7 + sret_x8 on stack (AAPCS64).
+ * sret_x8 is AArch64 indirect-result (X8) for std::string / large struct returns. */
 uint64_t axvm_dispatch_ex(uint32_t func_id,
                           uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
-                          uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);
+                          uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+                          uint64_t sret_x8);
 
 /* 扫描 /proc/self/maps 注册所有 .axvm 节 */
 void axvm_scan_proc_maps(void);

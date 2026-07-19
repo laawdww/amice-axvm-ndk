@@ -1,8 +1,8 @@
-# axvm-engine
+﻿# axvm-engine
 
 ARM64 native SO virtualizer for Android (NDK `arm64-v8a`).
 
-- **Runtime** (`runtime/`): bytecode VM, loader, crypt, guard — shipped as **`libaxvm.so`**
+- **Runtime** (`runtime/`): bytecode VM, loader, crypt, guard 鈥?shipped as **`libaxvm.so`**
 - **Packer** (`tools/axpack/`): ELF lifter, EOF pack, stub trampoline, encrypt / wipe / apk-bind
 - **Demo** (`android/`, `samples/victim/`): APK + protected victim SO E2E
 
@@ -11,7 +11,7 @@ ARM64 native SO virtualizer for Android (NDK `arm64-v8a`).
 Repo root `protect-ndk.ps1` (also `scripts/protect-ndk.ps1`):
 
 ```powershell
-# SO in → protected SO out (SingleSo defaults)
+# SO in 鈫?protected SO out (SingleSo defaults)
 ..\..\..\protect-ndk.ps1 -In libfoo.so -Out libfoo.axvm.so -Package com.example.app -Apk app.apk
 ```
 
@@ -64,11 +64,11 @@ Legacy fixed magic (no AXDS): add `-legacy-pack-magic`. Disable EOF decoys: `-de
 |------|---------|
 | `-scan` / `-report` | List liftable symbols; JSON coverage |
 | `-degrade` | Skip symbols that fail lift; continue pack |
-| `-skip-atomic` | **Default ON** — skip LDXR/CAS/LDADD (approximate if forced off) |
-| `-no-skip-atomic` | Lift atomics as plain load/store — **unsafe for real concurrency** |
+| `-skip-atomic` | **Default OFF** — with `-degrade`, skip symbols containing atomic insns (default: lift with true host atomics) |
+| `-no-skip-atomic` | Lift atomics as plain load/store 鈥?**unsafe for real concurrency** |
 | `-native-wipe` / AXNW | Keep non-liftable native as encrypted `.text` |
 
-**Before virtualizing third-party SO:** run `-scan`. Crypto / ML / image SOs often need more NEON/SIMD in the lifter; atomics need true semantics (P1 gap). See P1 doc §「已知限制」.
+**Before virtualizing third-party SO:** run `-scan`. Crypto / ML / image SOs often need more NEON/SIMD in the lifter; atomics need true semantics (P1 gap). See P1 doc 搂銆屽凡鐭ラ檺鍒躲€?
 
 ## Quick demo APK (Windows)
 
@@ -115,7 +115,7 @@ Build `build/axpack.exe` first (`go build -o ../build/axpack.exe .` in `tools/ax
 ```powershell
 cmake -S . -B build-del -DCMAKE_BUILD_TYPE=Release `
   -DAXVM_DEMO_JNI=OFF `
-  -DAXVM_OLLVM=ON    # optional: needs AMICE libamice.so — see github.com/fuqiuluo/amice
+  -DAXVM_OLLVM=ON    # optional: needs AMICE libamice.so 鈥?see github.com/fuqiuluo/amice
 # export AMICE_PLUGIN=/path/to/libamice.so
 # export AMICE_STRING_ENCRYPTION=1
 
@@ -124,19 +124,19 @@ cmake -S . -B build-del -DCMAKE_BUILD_TYPE=Release `
   -apk-bind -package com.example.app -apk-cert-sha256 <64-hex>
 ```
 
-Exports shrink to `JNI_OnLoad`, `ApkBinding.nativeSetBinding`, `axvm_dispatch_ex`, loader API, and GOT gate — no `vm*Probe` / `*_selftest` / `axvm_dynseed_get_master_plain`.
+Exports shrink to `JNI_OnLoad`, `ApkBinding.nativeSetBinding`, `axvm_dispatch_ex`, loader API, and GOT gate 鈥?no `vm*Probe` / `*_selftest` / `axvm_dynseed_get_master_plain`.
 
 ## Status (P1 vs P2)
 
 | Item | Status |
 |------|--------|
 | Pack magic derivation + EOF decoys | Done (decoys MAC-invalid + name `_axdecoy_*`) |
-| Stub 8× prologue variants | Done (int + FP) |
-| libaxvm static link into app | **P2 partial** — `-DAXVM_EMBED_RUNTIME=ON` links runtime into `libvictim.so`; JNI still uses `libaxvm.so` unless integrated |
-| NEON / true atomics | **P1 partial** — LDR/STR Q (128-bit) lifted as dual D; scan warns atomics; default `-skip-atomic` |
-| Delivery export surface | **Done** — `-DAXVM_DEMO_JNI=OFF` + export map (~10 symbols vs 309) |
-| Disk stext with `-no-patch` | **Done** — full function body encrypted at pack time |
-| OLLVM / AMICE runtime obfuscation | **Opt-in** — `-DAXVM_OLLVM=ON` + [fuqiuluo/amice](https://github.com/fuqiuluo/amice) |
-| Delivery export surface | **Done** — `-DAXVM_DEMO_JNI=OFF` + export map (~10 symbols vs 309) |
-| Disk stext with `-no-patch` | **Done** — full function body encrypted at pack time |
-| OLLVM / AMICE runtime obfuscation | **Opt-in** — `-DAXVM_OLLVM=ON` + [fuqiuluo/amice](https://github.com/fuqiuluo/amice) |
+| Stub 8脳 prologue variants | Done (int + FP) |
+| libaxvm static link into app | **P2 partial** 鈥?`-DAXVM_EMBED_RUNTIME=ON` links runtime into `libvictim.so`; JNI still uses `libaxvm.so` unless integrated |
+| NEON / true atomics | **P1 partial** 鈥?LDR/STR Q (128-bit) lifted as dual D; scan warns atomics; default: lift atomics; optional `-skip-atomic` |
+| Delivery export surface | **Done** 鈥?`-DAXVM_DEMO_JNI=OFF` + export map (~10 symbols vs 309) |
+| Disk stext with `-no-patch` | **Done** 鈥?full function body encrypted at pack time |
+| OLLVM / AMICE runtime obfuscation | **Opt-in** 鈥?`-DAXVM_OLLVM=ON` + [fuqiuluo/amice](https://github.com/fuqiuluo/amice) |
+| Delivery export surface | **Done** 鈥?`-DAXVM_DEMO_JNI=OFF` + export map (~10 symbols vs 309) |
+| Disk stext with `-no-patch` | **Done** 鈥?full function body encrypted at pack time |
+| OLLVM / AMICE runtime obfuscation | **Opt-in** 鈥?`-DAXVM_OLLVM=ON` + [fuqiuluo/amice](https://github.com/fuqiuluo/amice) |

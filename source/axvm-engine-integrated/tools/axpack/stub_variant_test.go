@@ -12,10 +12,13 @@ func TestStubLayoutVariants(t *testing.T) {
 			t.Fatalf("variant %d size got %d want %d", lay.variant, len(stub), lay.size)
 		}
 		disp := int(lay.dispatchOff)
-		if disp+16 > len(stub) {
+		if disp+24 > len(stub) {
 			t.Fatalf("variant %d dispatch oob", lay.variant)
 		}
-		for i := 0; i < 16; i += 4 {
+		if binary.LittleEndian.Uint32(stub[disp:disp+4]) != 0x14000005 {
+			t.Fatalf("variant %d expected safe-zero B", lay.variant)
+		}
+		for i := 4; i < 16; i += 4 {
 			word := binary.LittleEndian.Uint32(stub[disp+i : disp+i+4])
 			if word != arm64NOP {
 				t.Fatalf("variant %d dispatch slot @%d got 0x%08X want NOP", lay.variant, disp+i, word)

@@ -87,8 +87,9 @@ func genStub(funcID uint32, padSeed uint64) []byte {
 }
 
 func genStubVariant(funcID uint32, padSeed uint64, lay *stubLayout) []byte {
-	epilogue := []uint32{0xA8C67BFD, arm64RET}
-	return composeStubVariant(lay, funcID, padSeed, emitIntPrologue, epilogue, 0x9E3779B97F4A7C15)
+	/* ADD sp,#16 pops a7/sret; then restore frame */
+	epilogue := []uint32{0x910043FF, 0xA8C67BFD, arm64RET}
+	return composeStubVariant(lay, funcID, padSeed, emitIntPrologue, epilogue, 0x9E3779B97F4A7C15, true)
 }
 
 func genStubFP(funcID uint32, padSeed uint64) []byte {
@@ -97,8 +98,8 @@ func genStubFP(funcID uint32, padSeed uint64) []byte {
 }
 
 func genStubFPVariant(funcID uint32, padSeed uint64, lay *stubLayout) []byte {
-	epilogue := []uint32{0x9E670000, 0xA8C77BFD, arm64RET}
-	return composeStubVariant(lay, funcID, padSeed, emitFPPrologue, epilogue, 0xBF58476D1CE4E5B9)
+	epilogue := []uint32{0x910043FF, 0x9E670000, 0xA8C77BFD, arm64RET}
+	return composeStubVariant(lay, funcID, padSeed, emitFPPrologue, epilogue, 0xBF58476D1CE4E5B9, false)
 }
 
 /* VMPacker 风格 3 指令 token 跳板：MOV W16,#lo; MOVK W16,#hi; B entry */

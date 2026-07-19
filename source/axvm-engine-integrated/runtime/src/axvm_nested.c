@@ -3,6 +3,7 @@
 #include "axvm.h"
 #include "axvm_bytecode.h"
 #include "axvm_dynseed.h"
+#include "axvm_reg.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -89,6 +90,9 @@ uint64_t axvm_nested_invoke(axvm_ctx_t *parent, const uint8_t *bc, size_t bc_len
     axvm_bridge_enter(child);
     if (args && argc > 0) {
         axvm_ctx_bind_args(child, args, argc);
+    }
+    if (parent) {
+        (void)axvm_reg_write(child, 8, parent->x[8]);
     }
     uint64_t rv = axvm_invoke(child, 0);
     axvm_ctx_destroy(child);

@@ -17,6 +17,10 @@ axvm_stub_body:
     ldr     x6, [sp, #56]
     ldr     x7, [sp, #64]
     mov     w0, #1
+    /* a7 (caller x7) + sret (x8) for axvm_dispatch_ex */
+    mov     x10, x8
+    ldr     x9, [sp, #72]
+    stp     x9, x10, [sp, #-16]!
     .align  4
     .global axvm_stub_dispatch_slot
 axvm_stub_dispatch_slot:
@@ -24,6 +28,7 @@ axvm_stub_dispatch_slot:
     nop
     nop
     nop
+    add     sp, sp, #16
     ldp     x29, x30, [sp], #96
     ret
     .size axvm_stub_body, .-axvm_stub_body
