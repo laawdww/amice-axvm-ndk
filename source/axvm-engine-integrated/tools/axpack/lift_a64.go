@@ -175,7 +175,7 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
 	}
 
-	/* ADD/SUB reg */
+	/* ADD/SUB/ADDS/SUBS reg (shifted) */
 	if (word & 0xFF200000) == 0x8B000000 {
 		rd := byte(word & 0x1F)
 		rn := byte((word >> 5) & 0x1F)
@@ -186,6 +186,9 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 		}
 		bc = append(bc, opAddReg, rd, rn, rhs)
 		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+	}
+	if (word & 0xFF200000) == 0xAB000000 {
+		return liftAddSubShiftedSetFlags(word, off, opAddReg, false, cache)
 	}
 	if (word & 0xFF200000) == 0xCB000000 {
 		rd := byte(word & 0x1F)
@@ -205,7 +208,14 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 		if rd == regXZR {
 			return liftedInsn{bytes: []byte{opCmpReg, rn, rm}, armOff: off, armSize: 4}, nil
 		}
-		return liftedInsn{bytes: []byte{opSubReg, rd, rn, rm}, armOff: off, armSize: 4}, nil
+		/* SUBS: store result then approximate NZ via CMP rd, #0 */
+		bc, rhs, ok := emitShiftedRegOperand(word, rd, rn, rm, false, cache)
+		if !ok {
+			return liftedInsn{}, unsupportedInsn{off, word, "SUBS shifted reg", "unsupported shift"}
+		}
+		bc = append(bc, opSubReg, rd, rn, rhs)
+		bc = append(bc, opCmpReg, rd, regXZR)
+		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
 	}
 	if (word & 0xFFE00000) == 0x0B200000 {
 		return liftAddSubExtended(word, off, opAddReg, true, false, cache)
@@ -225,6 +235,13 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 	if (word & 0xFFE00000) == 0xEB200000 {
 		return liftAddSubExtended(word, off, opSubReg, false, true, cache)
 	}
+	/* ADDS extended (W/X) */
+	if (word & 0xFFE00000) == 0x2B200000 {
+		return liftAddSubExtended(word, off, opAddReg, true, true, cache)
+	}
+	if (word & 0xFFE00000) == 0xAB200000 {
+		return liftAddSubExtended(word, off, opAddReg, false, true, cache)
+	}
 	if (word & 0x7F200000) == 0x0B000000 {
 		rd := byte(word & 0x1F)
 		rn := byte((word >> 5) & 0x1F)
@@ -236,6 +253,9 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 		bc = append(bc, opAddReg, rd, rn, rhs)
 		bc = appendMask32(bc, rd, cache)
 		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+	}
+	if (word & 0x7F200000) == 0x2B000000 {
+		return liftAddSubShiftedSetFlags(word, off, opAddReg, true, cache)
 	}
 	if (word & 0x7F200000) == 0x4B000000 {
 		rd := byte(word & 0x1F)
@@ -256,8 +276,13 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 		if rd == regXZR {
 			return liftedInsn{bytes: []byte{opCmpReg32, rn, rm}, armOff: off, armSize: 4}, nil
 		}
-		bc := []byte{opSubReg, rd, rn, rm}
+		bc, rhs, ok := emitShiftedRegOperand(word, rd, rn, rm, true, cache)
+		if !ok {
+			return liftedInsn{}, unsupportedInsn{off, word, "SUBS W shifted reg", "unsupported shift"}
+		}
+		bc = append(bc, opSubReg, rd, rn, rhs)
 		bc = appendMask32(bc, rd, cache)
+		bc = append(bc, opCmpReg32, rd, regXZR)
 		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
 	}
 
@@ -563,6 +588,15 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 	if (word&0xFFE07C00) == 0xC8202000 || (word&0xFFE07C00) == 0xC8203000 {
 		return liftStxp(word, off)
 	}
+
+	/* LDAR/STLR/LDARB/STLRB/LDARH/STLRH/LDAPR — before CAS (LDAPR shares high bits with CAS mask). */
+	if (word&0x3FF07C00) == 0x08D07C00 || (word&0x3FF07C00) == 0x08B07C00 {
+		return liftLdarStlr(word, off, false)
+	}
+	if (word & 0x3FF07C00) == 0x08907C00 {
+		return liftLdarStlr(word, off, true)
+	}
+
 	/* CAS/CASA/CASL/CASAL X */
 	if (word & 0xFFA07C00) == 0xC8A07C00 {
 		return liftCas(word, off)
@@ -677,6 +711,16 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 		return liftLoadStorePair(word, off, store, cache)
 	}
 
+	/* LDRB/STRB/H imm9: unscaled (00) / post (01) / pre (11). mode 10 = reg-offset (skip). */
+	if ((word>>30)&3) <= 1 && (word&0x3B200000) == 0x38000000 {
+		opc := (word >> 22) & 3
+		mode := (word >> 10) & 3
+		if mode != 2 && (opc == 0 || opc == 1) {
+			store := opc == 0
+			return liftUnscaled(word, off, store)
+		}
+	}
+
 	/* LDUR/STUR — 0xF8x unscaled family */
 	if (word&0xFFE00C00) == 0xF8400400 || (word&0xFFE00C00) == 0xF8000400 ||
 		(word&0xFFE00C00) == 0xF8400C00 || (word&0xFFE00C00) == 0xF8000C00 {
@@ -688,7 +732,7 @@ func decodeInsnAt(code []byte, off int, funcAddr uint64, cache *relocCache, layo
 		return liftUnscaled(word, off, store)
 	}
 
-	/* legacy unscaled class */
+	/* legacy unscaled class (32/64 already handled above; keep for other sizes) */
 	if (word & 0x3B600C00) == 0x38400000 {
 		return liftUnscaled(word, off, false)
 	}
@@ -798,14 +842,23 @@ func liftUnscaled(word uint32, off int, store bool) (liftedInsn, error) {
 	case size == 2 && store:
 		op = opSturU32
 	default:
-		if mode == 1 || mode == 3 {
-			return liftedInsn{}, unsupportedInsn{off, word, "LDST_NARROW_WB", "8/16-bit pre/post-index writeback is not implemented"}
-		}
-		/* 8/16-bit unscaled 提升为 32-bit LDUR/STUR + 掩码 */
+		/* 8/16-bit: unscaled or pre/post writeback */
+		var nbc []byte
+		var err error
+		var li liftedInsn
 		if store {
-			return liftNarrowStoreUnscaled(rt, rn, simm, off, size)
+			li, err = liftNarrowStoreUnscaled(rt, rn, memOff, off, size)
+		} else {
+			li, err = liftNarrowLoadUnscaled(rt, rn, memOff, off, size)
 		}
-		return liftNarrowLoadUnscaled(rt, rn, simm, off, size)
+		if err != nil {
+			return liftedInsn{}, err
+		}
+		nbc = li.bytes
+		if (mode == 1 || mode == 3) && simm != 0 {
+			nbc = append(nbc, emitAddImm(rn, rn, simm)...)
+		}
+		return liftedInsn{bytes: nbc, armOff: off, armSize: 4}, nil
 	}
 	bc := emitLdStUR(op, rt, rn, memOff)
 	if (mode == 1 || mode == 3) && simm != 0 {
@@ -1137,5 +1190,67 @@ func liftExtr(word uint32, off int) (liftedInsn, error) {
 	bc = append(bc, []byte{opLsrImm, scratchReg0, rn, imms}...)
 	bc = append(bc, []byte{opLslImm, scratchReg1, rm, left}...)
 	bc = append(bc, []byte{opOrrReg, rd, scratchReg0, scratchReg1}...)
+	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+}
+
+/* LDAR/STLR family → plain LDR/STR unsigned offset #0 */
+func liftLdarStlr(word uint32, off int, store bool) (liftedInsn, error) {
+	rt := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	size := (word >> 30) & 3
+	var op byte
+	switch {
+	case size == 3 && !store:
+		op = opLdrU64
+	case size == 3 && store:
+		op = opStrU64
+	case size == 2 && !store:
+		op = opLdrU32
+	case size == 2 && store:
+		op = opStrU32
+	case size == 1 && !store:
+		op = opLdrU16
+	case size == 1 && store:
+		op = opStrU16
+	case size == 0 && !store:
+		op = opLdrU8
+	case size == 0 && store:
+		op = opStrU8
+	default:
+		return liftedInsn{}, unsupportedInsn{off, word, "LDAR/STLR", "bad size"}
+	}
+	return liftedInsn{bytes: emitLdrStrU64(op, rt, rn, 0), armOff: off, armSize: 4}, nil
+}
+
+/* ADDS (shifted): ADD then CMP rd,#0 to approximate NZ flags */
+func liftAddSubShiftedSetFlags(word uint32, off int, op byte, is32 bool, cache *relocCache) (liftedInsn, error) {
+	rd := byte(word & 0x1F)
+	rn := byte((word >> 5) & 0x1F)
+	rm := byte((word >> 16) & 0x1F)
+	bc, rhs, ok := emitShiftedRegOperand(word, rd, rn, rm, is32, cache)
+	if !ok {
+		return liftedInsn{}, unsupportedInsn{off, word, "ADDS shifted reg", "unsupported shift"}
+	}
+	cmpOp := byte(opCmpReg)
+	if is32 {
+		cmpOp = opCmpReg32
+	}
+	if rd == regXZR {
+		tmp, _, ok2 := pickTwoScratch(rn, rm, 31)
+		if !ok2 {
+			return liftedInsn{}, unsupportedInsn{off, word, "ADDS shifted reg", "scratch unavailable"}
+		}
+		bc = append(bc, op, tmp, rn, rhs)
+		if is32 {
+			bc = appendMask32(bc, tmp, cache)
+		}
+		bc = append(bc, cmpOp, tmp, regXZR)
+		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
+	}
+	bc = append(bc, op, rd, rn, rhs)
+	if is32 {
+		bc = appendMask32(bc, rd, cache)
+	}
+	bc = append(bc, cmpOp, rd, regXZR)
 	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
 }

@@ -54,5 +54,12 @@ func liftAddSubExtended(word uint32, off int, op byte, is32 bool, setFlags bool,
 	if is32 {
 		bc = appendMask32(bc, rd, cache)
 	}
+	if setFlags && rd != regXZR {
+		cmpOp := byte(opCmpReg)
+		if is32 {
+			cmpOp = opCmpReg32
+		}
+		bc = append(bc, cmpOp, rd, regXZR)
+	}
 	return liftedInsn{bytes: bc, armOff: off, armSize: 4}, nil
 }

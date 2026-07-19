@@ -530,8 +530,14 @@ func tryDecodeFloatInsn(word uint32, off int, fpUsed *bool) (liftedInsn, bool) {
 		bc = append(bc, opFmovDBits, vd, scratchReg0)
 		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, true
 	}
-	/* SCVTF D,X (64-bit int to double) */
-	if (word & 0xFF800000) == 0x1E620000 {
+	/* SCVTF Dd, Xn / Dd, Wn (scalar int → double) */
+	if (word & 0xFFFFFC00) == 0x9E620000 { /* SCVTF D, X */
+		vd := byte(word & 0x1F)
+		xn := byte((word >> 5) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: []byte{opFmovDX, vd, xn}, armOff: off, armSize: 4}, true
+	}
+	if (word & 0xFFFFFC00) == 0x1E620000 { /* SCVTF D, W */
 		vd := byte(word & 0x1F)
 		xn := byte((word >> 5) & 0x1F)
 		markFP(fpUsed)
