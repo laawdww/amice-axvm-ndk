@@ -98,7 +98,6 @@ func TestSkipProtectByDefaultRuntimeExports(t *testing.T) {
 	for _, name := range []string{
 		"_ZL22fake_fn_for_jd_jma_symPKc",
 		"_ZL26fake_hook_for_java_mangledPKc",
-		"_ZL21fake_jni_empty_stringP7_JNIEnvP7_jclass",
 		"fake_signrate_check",
 	} {
 		if !skipProtectByDefault(name) {
@@ -108,6 +107,7 @@ func TestSkipProtectByDefaultRuntimeExports(t *testing.T) {
 	for _, name := range []string{
 		"_ZL13fake_jni_voidP7_JNIEnvP7_jclass",
 		"_ZL18fake_jni_detect_okP7_JNIEnvP7_jclass",
+		"_ZL21fake_jni_empty_stringP7_JNIEnvP7_jclass",
 	} {
 		if skipProtectByDefault(name) {
 			t.Fatalf("must still protect business symbol %s", name)

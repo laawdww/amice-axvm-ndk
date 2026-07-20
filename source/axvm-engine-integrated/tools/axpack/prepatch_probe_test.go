@@ -69,49 +69,57 @@ func probeDynSeedFromTail(buf []byte) (rawSeed, effective []byte, apkBind bool) 
 	flags := binary.LittleEndian.Uint32(blk[60:64])
 	nonce := blk[8:24]
 	enc := append([]byte(nil), blk[24:56]...)
+	apk := (flags&axdsFlagApkBind != 0) && (ver >= axdsVersion3)
+	if ver >= axdsVersion4 {
+		/* MK3 needs binding; probe returns ciphertext marker only. */
+		return enc, enc, apk
+	}
 	if ver >= axdsVersion2 {
 		dynseedMasterCipher(enc, nonce)
 	} else {
 		dynseedMasterCipherV1(enc, nonce)
 	}
-	apk := (ver >= axdsVersion3) && (flags&axdsFlagApkBind != 0)
 	return enc, enc, apk
 }
 
 func findAXDSBlock(buf []byte) []byte {
+	/* Prefer exact EOF-aligned block; otherwise scan only the last 4KiB. */
+	trim := len(buf)
+	for trim > 64 && buf[trim-1] == 0 {
+		trim--
+	}
+	if trim >= 64 {
+		p := buf[trim-64 : trim]
+		if axdsBlockLooksValid(p) {
+			return p
+		}
+	}
 	scan := len(buf)
-	if scan > 65536 {
-		scan = 65536
+	if scan > 4096 {
+		scan = 4096
 	}
 	base := len(buf) - scan
 	var last []byte
 	for off := 0; off+64 <= scan; off += 4 {
-		p := buf[base+off:]
-		if binary.LittleEndian.Uint32(p[0:4]) != axdsMagic {
-			continue
-		}
-		ver := binary.LittleEndian.Uint32(p[4:8])
-		if ver != axdsVersion && ver != axdsVersion2 && ver != axdsVersion3 {
-			continue
-		}
-		want := fnv1a32(p[:56])
-		got := binary.LittleEndian.Uint32(p[56:60])
-		if got != want {
-			continue
-		}
-		last = p[:64]
-	}
-	if last == nil && len(buf) >= 64 {
-		p := buf[len(buf)-64:]
-		if binary.LittleEndian.Uint32(p[0:4]) == axdsMagic {
-			want := fnv1a32(p[:56])
-			got := binary.LittleEndian.Uint32(p[56:60])
-			if got == want {
-				last = p
-			}
+		p := buf[base+off : base+off+64]
+		if axdsBlockLooksValid(p) {
+			last = p
 		}
 	}
 	return last
+}
+
+func axdsBlockLooksValid(p []byte) bool {
+	if len(p) < 64 || binary.LittleEndian.Uint32(p[0:4]) != axdsMagic {
+		return false
+	}
+	ver := binary.LittleEndian.Uint32(p[4:8])
+	if ver != axdsVersion && ver != axdsVersion2 && ver != axdsVersion3 && ver != axdsVersion4 {
+		return false
+	}
+	want := fnv1a32(p[:56])
+	got := binary.LittleEndian.Uint32(p[56:60])
+	return got == want
 }
 
 func findPackInBuf(buf []byte, magic uint32) int64 {

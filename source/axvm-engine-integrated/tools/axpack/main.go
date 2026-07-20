@@ -75,7 +75,7 @@ func main() {
 	skipAtomic := flag.Bool("skip-atomic", false, "with -degrade, skip symbols containing atomic insns (default: lift with true host atomics)")
 	noSkipAtomic := flag.Bool("no-skip-atomic", false, "force-lift atomic symbols (default behavior; kept for compatibility)")
 	diskReady := flag.Bool("disk-ready", false, "leave .text tails plaintext (NOP/wipe without stext crypt) so SO loads without runtime prepatch — single-SO mode")
-	apkBind := flag.Bool("apk-bind", false, "bind MasterSeed to -package + APK signing cert (AXDS v3)")
+	apkBind := flag.Bool("apk-bind", false, "bind MasterSeed to -package + APK signing cert (AXDS v4 MK3)")
 	apkPath := flag.String("apk", "", "APK path to read signing cert SHA-256 (with -apk-bind)")
 	apkPackage := flag.String("package", "", "Android applicationId for -apk-bind")
 	apkCertHex := flag.String("apk-cert-sha256", "", "signing cert SHA-256 hex (64 chars); alternative to -apk")
@@ -197,11 +197,13 @@ func main() {
 	}
 
 	/*
-	 * 模块 M：rawSeed 写入 AXDS；effective master 用于 opcode 置换/流密码。
-	 * -apk-bind 时 effective = HMAC(rawSeed, package||cert)，SO 单独提取无法解密。
+	 * 模块 M：rawSeed 写入 AXDS（v4 MK3 时用 pkg||cert 作 wrap key，nonce  alone 不可解）；
+	 * effective master 用于 opcode 置换/流密码。-apk-bind 时 effective = HMAC(rawSeed, package||cert)。
 	 */
 	var rawSeed, master []byte
 	var useApkBind bool
+	var bindPkg string
+	var bindCert []byte
 	if *dynseed {
 		rawSeed = make([]byte, 32)
 		if _, err := rand.Read(rawSeed); err != nil {
@@ -218,7 +220,9 @@ func main() {
 				fatal("apk-bind: derive master failed")
 			}
 			useApkBind = true
-			fmt.Printf("apk-bind: package=%s cert_sha256=%x...\n", pkg, cert[:4])
+			bindPkg = pkg
+			bindCert = cert
+			fmt.Printf("apk-bind: package=%s cert_sha256=%x... (AXDS v4 MK3)\n", pkg, cert[:4])
 		}
 	}
 
@@ -237,7 +241,7 @@ func main() {
 	if *dynseed && len(master) >= 32 {
 		wrapPackKeySeed(pack, master)
 	}
-	outData, err := injectAndPatch(raw, ef, pack, stubs, funcs, nativeLeft, *wipe, doNativeWipe, *dep, *noPhdr, *noPatch, *noNorm, *integrity, *dynseed, *tokenEntry, rawSeed, master, useApkBind, *decoys, packMagic, *diskReady)
+	outData, err := injectAndPatch(raw, ef, pack, stubs, funcs, nativeLeft, *wipe, doNativeWipe, *dep, *noPhdr, *noPatch, *noNorm, *integrity, *dynseed, *tokenEntry, rawSeed, master, useApkBind, bindPkg, bindCert, *decoys, packMagic, *diskReady)
 	if err != nil {
 		fatal("pack: %v", err)
 	}

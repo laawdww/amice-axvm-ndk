@@ -1244,53 +1244,290 @@ Java_com_hook_bypass_AxvmApkBinding_nativeSetBinding(JNIEnv *env, jclass clazz,
     return ok ? JNI_TRUE : JNI_FALSE;
 }
 
+/* Dual-SO: decrypt stext / AXNW on a writable SO path before dlopen(native_core). */
+JNIEXPORT jboolean JNICALL
+Java_com_hook_bypass_AxvmPrepatch_nativePrepatch(JNIEnv *env, jclass clazz, jstring jpath)
+{
+    (void)clazz;
+    if (!jpath) {
+        return JNI_FALSE;
+    }
+    const char *path = (*env)->GetStringUTFChars(env, jpath, NULL);
+    if (!path) {
+        return JNI_FALSE;
+    }
+    int ok = axvm_prepatch_so_file(path);
+    (*env)->ReleaseStringUTFChars(env, jpath, path);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+#if defined(__ANDROID__) && defined(AXVM_DYNAMIC_SEED) && AXVM_DYNAMIC_SEED
+/*
+ * Bind apk identity via PackageManager at JNI_OnLoad (no embedded cert).
+ * Uses system Context so LSPosed early load works before Application exists.
+ */
+static int axvm_jni_bind_from_packagemanager(JNIEnv *env)
+{
+    if (!env || axvm_dynseed_apk_binding_present()) {
+        return 1;
+    }
+    /* Module package only (not cert) — XOR 0x5C */
+    static const uint8_t pkg_enc[] = {
+        0x3f, 0x33, 0x31, 0x72, 0x39, 0x24, 0x3d, 0x31, 0x2c, 0x30, 0x39, 0x72,
+        0x35, 0x3d, 0x29, 0x29, 0x2b, 0x32, 0x32, 0x33
+    };
+    char pkg[sizeof(pkg_enc) + 1];
+    volatile uint8_t xk = 0x5Cu;
+    size_t i;
+    for (i = 0; i < sizeof(pkg_enc); ++i) {
+        pkg[i] = (char)(pkg_enc[i] ^ xk);
+    }
+    pkg[sizeof(pkg_enc)] = 0;
+
+    jclass at_cls = (*env)->FindClass(env, "android/app/ActivityThread");
+    if (!at_cls) {
+        (*env)->ExceptionClear(env);
+        return 0;
+    }
+    jmethodID cur_app = (*env)->GetStaticMethodID(
+        env, at_cls, "currentApplication", "()Landroid/app/Application;");
+    jmethodID cur_at = (*env)->GetStaticMethodID(
+        env, at_cls, "currentActivityThread", "()Landroid/app/ActivityThread;");
+    jobject ctx = NULL;
+    if (cur_app) {
+        ctx = (*env)->CallStaticObjectMethod(env, at_cls, cur_app);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            ctx = NULL;
+        }
+    } else {
+        (*env)->ExceptionClear(env);
+    }
+    if (!ctx && cur_at) {
+        jobject at = (*env)->CallStaticObjectMethod(env, at_cls, cur_at);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            at = NULL;
+        }
+        if (at) {
+            jmethodID get_sys = (*env)->GetMethodID(
+                env, at_cls, "getSystemContext", "()Landroid/app/ContextImpl;");
+            if (!get_sys) {
+                (*env)->ExceptionClear(env);
+                get_sys = (*env)->GetMethodID(
+                    env, at_cls, "getSystemContext", "()Landroid/content/Context;");
+            }
+            if (get_sys) {
+                ctx = (*env)->CallObjectMethod(env, at, get_sys);
+                if ((*env)->ExceptionCheck(env)) {
+                    (*env)->ExceptionClear(env);
+                    ctx = NULL;
+                }
+            } else {
+                (*env)->ExceptionClear(env);
+            }
+            (*env)->DeleteLocalRef(env, at);
+        }
+    } else if (!cur_at) {
+        (*env)->ExceptionClear(env);
+    }
+    (*env)->DeleteLocalRef(env, at_cls);
+    if (!ctx) {
+        return 0;
+    }
+
+    jclass ctx_cls = (*env)->GetObjectClass(env, ctx);
+    jmethodID get_pm = (*env)->GetMethodID(
+        env, ctx_cls, "getPackageManager", "()Landroid/content/pm/PackageManager;");
+    if (!get_pm) {
+        (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, ctx_cls);
+        (*env)->DeleteLocalRef(env, ctx);
+        return 0;
+    }
+    jobject pm = (*env)->CallObjectMethod(env, ctx, get_pm);
+    if ((*env)->ExceptionCheck(env) || !pm) {
+        (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, ctx_cls);
+        (*env)->DeleteLocalRef(env, ctx);
+        return 0;
+    }
+
+    jclass pm_cls = (*env)->GetObjectClass(env, pm);
+    jstring jpkg = (*env)->NewStringUTF(env, pkg);
+    jmethodID get_pi = (*env)->GetMethodID(
+        env, pm_cls, "getPackageInfo",
+        "(Ljava/lang/String;I)Landroid/content/pm/PackageInfo;");
+    jobject pi = NULL;
+    if (get_pi) {
+        /* GET_SIGNING_CERTIFICATES = 0x08000000 (API 28+) */
+        pi = (*env)->CallObjectMethod(env, pm, get_pi, jpkg, (jint)0x08000000);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            pi = NULL;
+        }
+        if (!pi) {
+            /* GET_SIGNATURES = 0x40 */
+            pi = (*env)->CallObjectMethod(env, pm, get_pi, jpkg, (jint)0x40);
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+                pi = NULL;
+            }
+        }
+    } else {
+        (*env)->ExceptionClear(env);
+    }
+    if (!pi) {
+        (*env)->DeleteLocalRef(env, jpkg);
+        (*env)->DeleteLocalRef(env, pm_cls);
+        (*env)->DeleteLocalRef(env, pm);
+        (*env)->DeleteLocalRef(env, ctx_cls);
+        (*env)->DeleteLocalRef(env, ctx);
+        return 0;
+    }
+
+    jclass pi_cls = (*env)->GetObjectClass(env, pi);
+    jobjectArray sigs = NULL;
+    jfieldID fi_si = (*env)->GetFieldID(
+        env, pi_cls, "signingInfo", "Landroid/content/pm/SigningInfo;");
+    if (fi_si) {
+        jobject si = (*env)->GetObjectField(env, pi, fi_si);
+        if (si) {
+            jclass si_cls = (*env)->GetObjectClass(env, si);
+            jmethodID get_signers = (*env)->GetMethodID(
+                env, si_cls, "getApkContentsSigners",
+                "()[Landroid/content/pm/Signature;");
+            if (get_signers) {
+                sigs = (jobjectArray)(*env)->CallObjectMethod(env, si, get_signers);
+                if ((*env)->ExceptionCheck(env)) {
+                    (*env)->ExceptionClear(env);
+                    sigs = NULL;
+                }
+            } else {
+                (*env)->ExceptionClear(env);
+            }
+            (*env)->DeleteLocalRef(env, si_cls);
+            (*env)->DeleteLocalRef(env, si);
+        }
+    } else {
+        (*env)->ExceptionClear(env);
+    }
+    if (!sigs) {
+        jfieldID fi_sigs = (*env)->GetFieldID(
+            env, pi_cls, "signatures", "[Landroid/content/pm/Signature;");
+        if (fi_sigs) {
+            sigs = (jobjectArray)(*env)->GetObjectField(env, pi, fi_sigs);
+        } else {
+            (*env)->ExceptionClear(env);
+        }
+    }
+
+    int ok = 0;
+    if (sigs && (*env)->GetArrayLength(env, sigs) > 0) {
+        jobject sig0 = (*env)->GetObjectArrayElement(env, sigs, 0);
+        if (sig0) {
+            jclass sig_cls = (*env)->GetObjectClass(env, sig0);
+            jmethodID to_byte = (*env)->GetMethodID(env, sig_cls, "toByteArray", "()[B");
+            jbyteArray raw = NULL;
+            if (to_byte) {
+                raw = (jbyteArray)(*env)->CallObjectMethod(env, sig0, to_byte);
+                if ((*env)->ExceptionCheck(env)) {
+                    (*env)->ExceptionClear(env);
+                    raw = NULL;
+                }
+            } else {
+                (*env)->ExceptionClear(env);
+            }
+            if (raw) {
+                jclass md_cls = (*env)->FindClass(env, "java/security/MessageDigest");
+                jmethodID md_get = NULL;
+                if (md_cls) {
+                    md_get = (*env)->GetStaticMethodID(
+                        env, md_cls, "getInstance",
+                        "(Ljava/lang/String;)Ljava/security/MessageDigest;");
+                } else {
+                    (*env)->ExceptionClear(env);
+                }
+                jstring sha = (*env)->NewStringUTF(env, "SHA-256");
+                jobject md = (md_get && sha)
+                    ? (*env)->CallStaticObjectMethod(env, md_cls, md_get, sha)
+                    : NULL;
+                if ((*env)->ExceptionCheck(env)) {
+                    (*env)->ExceptionClear(env);
+                    md = NULL;
+                }
+                if (md) {
+                    jmethodID digest = (*env)->GetMethodID(env, md_cls, "digest", "([B)[B");
+                    jbyteArray dig = NULL;
+                    if (digest) {
+                        dig = (jbyteArray)(*env)->CallObjectMethod(env, md, digest, raw);
+                        if ((*env)->ExceptionCheck(env)) {
+                            (*env)->ExceptionClear(env);
+                            dig = NULL;
+                        }
+                    }
+                    if (dig && (*env)->GetArrayLength(env, dig) == 32) {
+                        jbyte *c = (*env)->GetByteArrayElements(env, dig, NULL);
+                        if (c) {
+                            ok = axvm_dynseed_set_apk_binding(pkg, (const uint8_t *)c);
+                            (*env)->ReleaseByteArrayElements(env, dig, c, JNI_ABORT);
+                        }
+                    }
+                    if (dig) {
+                        (*env)->DeleteLocalRef(env, dig);
+                    }
+                    (*env)->DeleteLocalRef(env, md);
+                }
+                if (sha) {
+                    (*env)->DeleteLocalRef(env, sha);
+                }
+                if (md_cls) {
+                    (*env)->DeleteLocalRef(env, md_cls);
+                }
+                (*env)->DeleteLocalRef(env, raw);
+            }
+            (*env)->DeleteLocalRef(env, sig_cls);
+            (*env)->DeleteLocalRef(env, sig0);
+        }
+    }
+
+    volatile char *pw = pkg;
+    for (i = 0; i < sizeof(pkg); ++i) {
+        pw[i] = 0;
+    }
+    if (sigs) {
+        (*env)->DeleteLocalRef(env, sigs);
+    }
+    (*env)->DeleteLocalRef(env, pi_cls);
+    (*env)->DeleteLocalRef(env, pi);
+    (*env)->DeleteLocalRef(env, jpkg);
+    (*env)->DeleteLocalRef(env, pm_cls);
+    (*env)->DeleteLocalRef(env, pm);
+    (*env)->DeleteLocalRef(env, ctx_cls);
+    (*env)->DeleteLocalRef(env, ctx);
+    return ok;
+}
+#endif
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved)
 {
     (void)reserved;
     axvm_register_dispatch((void *)(uintptr_t)x7d);
-#if defined(__ANDROID__) && defined(AXVM_DYNAMIC_SEED) && AXVM_DYNAMIC_SEED
-    /* Pre-bind module package+cert before libnative_core loads (apk-bind AXDS).
-     * Material is XOR-obfuscated to avoid contiguous pkg/cert in .rodata. */
-    if (!axvm_dynseed_apk_binding_present()) {
-        static const uint8_t k_pkg_enc[] = {
-            /* com.example.iauuwnno ^ 0x5C */
-            0x3f, 0x33, 0x31, 0x72, 0x39, 0x24, 0x3d, 0x31,
-            0x2c, 0x30, 0x39, 0x72, 0x35, 0x3d, 0x29, 0x29,
-            0x2b, 0x32, 0x32, 0x33
-        };
-        static const uint8_t k_cert_enc[32] = {
-            0x83, 0x5d, 0x24, 0xa6, 0xb3, 0x08, 0xe4, 0x08,
-            0xf1, 0x5e, 0x93, 0x98, 0x62, 0x2a, 0xaa, 0x7f,
-            0xa1, 0xe3, 0x02, 0x99, 0x94, 0x87, 0xa4, 0xab,
-            0x30, 0x44, 0x51, 0x7a, 0x16, 0x29, 0x3e, 0x85
-        };
-        char pkg[sizeof(k_pkg_enc) + 1];
-        uint8_t cert[32];
-        size_t i;
-        volatile uint8_t xk = 0x5Cu;
-        for (i = 0; i < sizeof(k_pkg_enc); ++i) {
-            pkg[i] = (char)(k_pkg_enc[i] ^ xk);
-        }
-        pkg[sizeof(k_pkg_enc)] = 0;
-        for (i = 0; i < 32; ++i) {
-            cert[i] = (uint8_t)(k_cert_enc[i] ^ xk);
-        }
-        (void)axvm_dynseed_set_apk_binding(pkg, cert);
-        volatile char *pw = pkg;
-        volatile uint8_t *cw = cert;
-        for (i = 0; i < sizeof(pkg); ++i) {
-            pw[i] = 0;
-        }
-        for (i = 0; i < sizeof(cert); ++i) {
-            cw[i] = 0;
-        }
-    }
-#endif
+    /* P0: bind via PackageManager in JNI_OnLoad (no embedded cert). Java path remains fallback. */
 #if defined(__ANDROID__)
     /* Register ApkBinding even when DEMO_JNI is OFF (LSPosed Dual-SO). */
     {
         JNIEnv *env = NULL;
         if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) == JNI_OK && env) {
+#if defined(AXVM_DYNAMIC_SEED) && AXVM_DYNAMIC_SEED
+            if (axvm_jni_bind_from_packagemanager(env)) {
+                __android_log_print(ANDROID_LOG_INFO, "BYP",
+                                    "[Init] AxvmApkBinding(native PM) applied");
+            } else {
+                __android_log_print(ANDROID_LOG_WARN, "BYP",
+                                    "[Init] AxvmApkBinding(native PM) deferred");
+            }
+#endif
             char cls_name[40], meth[24], sig[32];
             /* XOR 0xA7 — avoid FindClass / RegisterNatives plaintext in .rodata */
             static const uint8_t cls_enc[] = {
@@ -1338,6 +1575,54 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved)
             }
             for (w = sig; w < sig + sizeof(sig); ++w) {
                 *w = 0;
+            }
+
+            /* Register AxvmPrepatch.nativePrepatch(String)Z */
+            {
+                char pcls[48], pmeth[24], psig[32];
+                static const uint8_t pcls_enc[] = {
+                    0xc4, 0xc8, 0xca, 0x88, 0xcf, 0xc8, 0xc8, 0xcc, 0x88, 0xc5, 0xde, 0xd7, 0xc6, 0xd4, 0xd4, 0x88,
+                    0xe6, 0xdf, 0xd1, 0xca, 0xf7, 0xd5, 0xc2, 0xd7, 0xc6, 0xd3, 0xc4, 0xcf
+                };
+                static const uint8_t pmeth_enc[] = {
+                    0xc9, 0xc6, 0xd3, 0xce, 0xd1, 0xc2, 0xf7, 0xd5, 0xc2, 0xd7, 0xc6, 0xd3, 0xc4, 0xcf
+                };
+                static const uint8_t psig_enc[] = {
+                    0x8f, 0xeb, 0xcd, 0xc6, 0xd1, 0xc6, 0x88, 0xcb, 0xc6, 0xc9, 0xc0, 0x88, 0xf4, 0xd3, 0xd5, 0xce,
+                    0xc9, 0xc0, 0x9c, 0x8e, 0xfd
+                };
+                for (i = 0; i < sizeof(pcls_enc); ++i) {
+                    pcls[i] = (char)(pcls_enc[i] ^ xk);
+                }
+                pcls[sizeof(pcls_enc)] = 0;
+                for (i = 0; i < sizeof(pmeth_enc); ++i) {
+                    pmeth[i] = (char)(pmeth_enc[i] ^ xk);
+                }
+                pmeth[sizeof(pmeth_enc)] = 0;
+                for (i = 0; i < sizeof(psig_enc); ++i) {
+                    psig[i] = (char)(psig_enc[i] ^ xk);
+                }
+                psig[sizeof(psig_enc)] = 0;
+                JNINativeMethod prep_methods[] = {
+                    { pmeth, psig,
+                      (void *)Java_com_hook_bypass_AxvmPrepatch_nativePrepatch },
+                };
+                jclass prep_cls = (*env)->FindClass(env, pcls);
+                if (prep_cls) {
+                    (void)(*env)->RegisterNatives(env, prep_cls, prep_methods, 1);
+                    (*env)->DeleteLocalRef(env, prep_cls);
+                } else {
+                    (*env)->ExceptionClear(env);
+                }
+                for (w = pcls; w < pcls + sizeof(pcls); ++w) {
+                    *w = 0;
+                }
+                for (w = pmeth; w < pmeth + sizeof(pmeth); ++w) {
+                    *w = 0;
+                }
+                for (w = psig; w < psig + sizeof(psig); ++w) {
+                    *w = 0;
+                }
             }
         }
     }

@@ -69,7 +69,7 @@ func TestFindPackWithDecoys(t *testing.T) {
 		BC:       []byte{0x50}, EntryPC: 0,
 	}}, false, false, raw, false, realMagic)
 	decoys := buildDecoyPacks(2, raw, realMagic)
-	blk := buildDynSeedBlock(raw, false)
+	blk := buildDynSeedBlock(raw, false, "", nil)
 	var file []byte
 	file = append(file, pack...)
 	file = append(file, stubs...)

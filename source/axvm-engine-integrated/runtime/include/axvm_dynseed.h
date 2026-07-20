@@ -29,17 +29,18 @@ extern "C" {
 #define AXDS_MAGIC   0x31445841u  /* 'AXD1' little-endian */
 #define AXDS_VERSION 0x00010000u
 #define AXDS_VERSION_V2 0x00010001u
-#define AXDS_VERSION_V3 0x00010002u /* flags.reserved: APK_BIND */
+#define AXDS_VERSION_V3 0x00010002u /* APK_BIND + MK2 (legacy: nonce-as-HMAC-key) */
+#define AXDS_VERSION_V4 0x00010003u /* APK_BIND + MK3 (wrap key from pkg||cert) */
 
 #define AXDS_FLAG_APK_BIND 0x00000001u
 
 #pragma pack(push, 1)
 typedef struct axvm_dynseed_block {
     uint32_t magic;        /* AXDS_MAGIC */
-    uint32_t version;      /* AXDS_VERSION */
-    uint8_t  nonce[16];    /* 轻量流密码 nonce（本次 build 随机） */
-    uint8_t  master_enc[32]; /* 加密后的 raw seed（非明文；APK_BIND 时再派生有效 MasterSeed） */
-    uint32_t checksum;     /* fnv1a32(magic..master_enc) 校验 */
+    uint32_t version;      /* AXDS_VERSION* */
+    uint8_t  nonce[16];    /* per-build random; NOT the cipher key for V4 */
+    uint8_t  master_enc[32]; /* encrypted raw seed */
+    uint32_t checksum;     /* fnv1a32(magic..master_enc) */
     uint32_t flags;        /* AXDS_FLAG_APK_BIND 等 */
 } axvm_dynseed_block_t;
 #pragma pack(pop)

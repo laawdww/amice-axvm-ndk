@@ -142,7 +142,7 @@ func emitIntReloadArgs(buf []byte) []byte {
 	return buf
 }
 
-/* Push a7 (caller x7 @ [sp,#72]) and sret (X8) for x7d stack args. */
+/* Push a7 (caller x7 @ [sp,#72]) and sret (X8) for axvm_dispatch_ex stack args. */
 func emitStubStackArgs(buf []byte, intFrame bool) []byte {
 	buf = appendU32(buf, 0xAA0803EA) // MOV x10, x8  (sret)
 	if intFrame {

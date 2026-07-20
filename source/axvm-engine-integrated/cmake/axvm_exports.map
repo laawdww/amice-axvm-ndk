@@ -1,9 +1,18 @@
-{
-  global:
-    JNI_OnLoad;
-    /* Opaque Dual-SO stub entry points (pass3: hide axvm_* Frida magnets). */
-    x7g;
-    x7d;
-  local:
-    *;
-};
+{
+
+  global:
+
+    JNI_OnLoad;
+
+    /* Opaque Dual-SO stub entry points (pass3: hide axvm_* Frida magnets). */
+
+    x7g;
+
+    x7d;
+
+  local:
+
+    *;
+
+};
+

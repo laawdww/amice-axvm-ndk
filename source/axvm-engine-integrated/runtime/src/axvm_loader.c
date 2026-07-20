@@ -95,6 +95,7 @@ typedef struct axvm_func_slot {
     void       *load_base;
     axvm_ctx_t *ctx;
     pthread_mutex_t invoke_mu; /* one ctx per slot — serialize concurrent invokes */
+    uint8_t     bc_encrypted; /* 1 = slot holds ciphertext; decrypt only into ctx */
     char        name[48];
 } axvm_func_slot_t;
 
@@ -300,13 +301,20 @@ static int pack_valid(const uint8_t *p, size_t len)
 				return 0;
 			}
 			/*
-			 * 模块 Z：manifest MAC（新增）。checksum==0 兼容历史包；
-			 * 非零时必须通过 HMAC 校验，防止 pack table/blob 被离线篡改。
+			 * Manifest MAC required for encrypted production packs.
+			 * checksum==0 is rejected (legacy bypass removed — P0).
 			 */
-			if (hdr->checksum != 0) {
+			if (hdr->flags & AXPK_FLAG_ENCRYPTED) {
+				if (hdr->checksum == 0) {
+					return 0;
+				}
 				uint32_t mac = pack_manifest_mac32(p, len);
 				if (mac == 0 || mac != hdr->checksum) {
-					/* decoy 故意错 MAC；真包失败由上层 PACK: FAIL 体现 */
+					return 0;
+				}
+			} else if (hdr->checksum != 0) {
+				uint32_t mac = pack_manifest_mac32(p, len);
+				if (mac == 0 || mac != hdr->checksum) {
 					return 0;
 				}
 			}
@@ -678,14 +686,10 @@ void axvm_module_load_ex(const uint8_t *pack, size_t len, void *load_base,
             continue;
         }
         memcpy(sl->bytecode, blob + r->blob_off, r->bc_size);
+        /* P1: keep ciphertext in the module slot; decrypt only when creating ctx.
+         * Avoids long-lived plaintext BC on the heap between load and first invoke. */
         if (hdr->flags & AXPK_FLAG_ENCRYPTED) {
-            const axvm_bc_header_t *bh = (const axvm_bc_header_t *)sl->bytecode;
-            size_t off = bh->code_off;
-            if (off < sl->bc_size) {
-                axvm_crypt_decrypt(sl->bytecode + off, sl->bc_size - off, r->func_id);
-                axvm_bc_header_t *wh = (axvm_bc_header_t *)sl->bytecode;
-                wh->checksum = axvm_bc_checksum(sl->bytecode, sl->bc_size);
-            }
+            sl->bc_encrypted = 1;
         }
         strncpy(sl->name, r->name, sizeof(sl->name) - 1);
 
@@ -754,13 +758,37 @@ uint64_t x7d(uint32_t func_id,
     if (!fn->ctx) {
         pthread_mutex_lock(&g_ctx_create_mu);
         if (!fn->ctx) {
-            if (!axvm_bc_validate(fn->bytecode, fn->bc_size)) {
-                const axvm_bc_header_t *bh = (const axvm_bc_header_t *)fn->bytecode;
+            uint8_t *plain = NULL;
+            const uint8_t *bc_in = fn->bytecode;
+            if (fn->bc_encrypted) {
+                plain = (uint8_t *)malloc(fn->bc_size);
+                if (!plain) {
+                    AXVM_LOGE("bc decrypt OOM id=%u", func_id);
+                    pthread_mutex_unlock(&g_ctx_create_mu);
+                    goto out;
+                }
+                memcpy(plain, fn->bytecode, fn->bc_size);
+                const axvm_bc_header_t *bh = (const axvm_bc_header_t *)plain;
+                size_t off = bh->code_off;
+                if (off < fn->bc_size) {
+                    axvm_crypt_decrypt(plain + off, fn->bc_size - off, fn->func_id);
+                }
+                bc_in = plain;
+            }
+            if (!axvm_bc_validate(bc_in, fn->bc_size)) {
+                const axvm_bc_header_t *bh = (const axvm_bc_header_t *)bc_in;
                 AXVM_LOGE("bc invalid id=%u len=%zu ver=%x off=%u csz=%u chk=%x calc=%x",
                           func_id, fn->bc_size, bh->version, bh->code_off, bh->code_size,
-                          bh->checksum, axvm_bc_checksum(fn->bytecode, fn->bc_size));
+                          bh->checksum, axvm_bc_checksum(bc_in, fn->bc_size));
             }
-            axvm_status_t cst = axvm_ctx_create(&fn->ctx, fn->bytecode, fn->bc_size);
+            axvm_status_t cst = axvm_ctx_create(&fn->ctx, bc_in, fn->bc_size);
+            if (plain) {
+                volatile uint8_t *w = plain;
+                for (size_t i = 0; i < fn->bc_size; ++i) {
+                    w[i] = 0;
+                }
+                free(plain);
+            }
             if (cst != AXVM_OK) {
                 pthread_mutex_unlock(&g_ctx_create_mu);
                 AXVM_LOGE("ctx create fail id=%u st=%d", func_id, (int)cst);
@@ -1956,9 +1984,14 @@ static uint64_t pack_off_in_buf(const uint8_t *buf, size_t len)
         return 0;
     }
     ensure_dynseed_probe_tail(buf, len);
+    /*
+     * Pack sits before stubs/decoys/AXDS. With decoys the real pack can be
+     * hundreds of KiB before EOF — a 64KiB window misses it. Prepatch is
+     * one-shot; scan up to 2MiB from EOF (or whole file if smaller).
+     */
     size_t scan = len;
-    if (scan > 65536u) {
-        scan = 65536u;
+    if (scan > (2u << 20)) {
+        scan = (2u << 20);
     }
     uint64_t base = (uint64_t)len - (uint64_t)scan;
     uint64_t found = 0;

@@ -39,6 +39,10 @@ func wrapPackKeySeed(pack, master []byte) {
 	if len(pack) < 64 || len(master) < 32 {
 		return
 	}
+	flags := binary.LittleEndian.Uint32(pack[8:12])
+	if flags&axpkSeedWrapped != 0 {
+		return /* already wrapped */
+	}
 	wrap := masterSubkeyBytes(master, axvmPurposeKSeed, 16)
 	if len(wrap) < 16 {
 		return
@@ -46,9 +50,46 @@ func wrapPackKeySeed(pack, master []byte) {
 	for i := 0; i < 16; i++ {
 		pack[28+i] ^= wrap[i]
 	}
-	flags := binary.LittleEndian.Uint32(pack[8:12])
 	flags |= axpkSeedWrapped
 	binary.LittleEndian.PutUint32(pack[8:12], flags)
+}
+
+/* Inverse of wrapPackKeySeed — required before resealing manifest MAC. */
+func unwrapPackKeySeed(pack, master []byte) {
+	if len(pack) < 64 || len(master) < 32 {
+		return
+	}
+	flags := binary.LittleEndian.Uint32(pack[8:12])
+	if flags&axpkSeedWrapped == 0 {
+		return
+	}
+	wrap := masterSubkeyBytes(master, axvmPurposeKSeed, 16)
+	if len(wrap) < 16 {
+		return
+	}
+	for i := 0; i < 16; i++ {
+		pack[28+i] ^= wrap[i]
+	}
+	flags &^= axpkSeedWrapped
+	binary.LittleEndian.PutUint32(pack[8:12], flags)
+}
+
+/*
+ * Manifest MAC must be computed over plaintext key_seed (matches C pack_manifest_mac32).
+ * If SEED_WRAPPED, temporarily unwrap → seal → re-wrap.
+ */
+func resealPackManifestMAC(pack, master []byte) {
+	if len(pack) < 64 {
+		return
+	}
+	wrapped := binary.LittleEndian.Uint32(pack[8:12])&axpkSeedWrapped != 0
+	if wrapped {
+		unwrapPackKeySeed(pack, master)
+	}
+	sealPackManifestMAC(pack)
+	if wrapped {
+		wrapPackKeySeed(pack, master)
+	}
 }
 
 func cryptV1(buf, seed []byte, funcID uint32) {

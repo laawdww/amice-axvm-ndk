@@ -117,3 +117,59 @@ func TestStextCryptRoundtrip(t *testing.T) {
 		t.Fatal("stext crypt roundtrip failed")
 	}
 }
+
+func TestResealPackManifestAfterWrap(t *testing.T) {
+	pack := make([]byte, 96)
+	copy(pack[0:4], []byte("AXPK"))
+	binary.LittleEndian.PutUint32(pack[4:8], axpkVersionV2)
+	binary.LittleEndian.PutUint32(pack[8:12], axpkEncrypt)
+	binary.LittleEndian.PutUint32(pack[12:16], 1)  // func_count
+	binary.LittleEndian.PutUint32(pack[16:20], 64) // table_off
+	binary.LittleEndian.PutUint32(pack[20:24], 80) // blob_off
+	binary.LittleEndian.PutUint32(pack[24:28], 16) // blob_size
+	for i := 0; i < 16; i++ {
+		pack[28+i] = byte(i + 1)
+	}
+	master := make([]byte, 32)
+	for i := range master {
+		master[i] = byte(0xA0 + i)
+	}
+	sealPackManifestMAC(pack)
+	plainMAC := binary.LittleEndian.Uint32(pack[44:48])
+	if plainMAC == 0 {
+		t.Fatal("plain seal produced zero MAC")
+	}
+	if !packManifestTrusted(pack) {
+		t.Fatal("plain pack not trusted")
+	}
+	wrapPackKeySeed(pack, master)
+	if binary.LittleEndian.Uint32(pack[8:12])&axpkSeedWrapped == 0 {
+		t.Fatal("expected SEED_WRAPPED")
+	}
+	/* Naive reseal with wrapped seed on disk would diverge from C verify. */
+	bad := append([]byte(nil), pack...)
+	sealPackManifestMAC(bad)
+	resealPackManifestMAC(pack, master)
+	if binary.LittleEndian.Uint32(pack[8:12])&axpkSeedWrapped == 0 {
+		t.Fatal("reseal must re-wrap")
+	}
+	want := binary.LittleEndian.Uint32(pack[44:48])
+	badMAC := binary.LittleEndian.Uint32(bad[44:48])
+	if want == 0 {
+		t.Fatal("reseal produced zero MAC")
+	}
+	if want == badMAC {
+		t.Fatal("naive seal-after-wrap must differ from plaintext-seed MAC")
+	}
+	/* Simulate C: unwrap then MAC */
+	unwrapped := append([]byte(nil), pack...)
+	unwrapPackKeySeed(unwrapped, master)
+	got := axpkManifestMAC32(unwrapped)
+	if got != want {
+		t.Fatalf("C-style verify mismatch want=%08x got=%08x", want, got)
+	}
+	if got != plainMAC {
+		/* file_off / table may differ — here identical body, so equal */
+		t.Fatalf("reseal MAC %08x != original plain %08x", got, plainMAC)
+	}
+}

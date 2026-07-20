@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-func injectAndPatch(raw []byte, ef *elf.File, pack, stubs []byte, funcs, nativeLeft []fnInfo, wipe, nativeWipe bool, depLib string, noPhdr, noPatch, noNorm, integrity, dynseed, tokenEntry bool, rawSeed, effectiveMaster []byte, apkBind bool, decoys int, packMagic uint32, diskReady bool) ([]byte, error) {
+func injectAndPatch(raw []byte, ef *elf.File, pack, stubs []byte, funcs, nativeLeft []fnInfo, wipe, nativeWipe bool, depLib string, noPhdr, noPatch, noNorm, integrity, dynseed, tokenEntry bool, rawSeed, effectiveMaster []byte, apkBind bool, apkPackage string, apkCert []byte, decoys int, packMagic uint32, diskReady bool) ([]byte, error) {
 	rx, err := rxLoadSeg(ef)
 	if err != nil {
 		return nil, err
@@ -226,7 +226,7 @@ func injectAndPatch(raw []byte, ef *elf.File, pack, stubs []byte, funcs, nativeL
 
 	/* 模块 M：AXDS 置于 EOF（decoy 之后）；其后仅做 16 字节对齐 padding。 */
 	if dynseed {
-		blk := buildDynSeedBlock(rawSeed, apkBind)
+		blk := buildDynSeedBlock(rawSeed, apkBind, apkPackage, apkCert)
 		out = append(out, blk...)
 		for int64(len(out))%16 != 0 {
 			out = append(out, 0)
@@ -237,10 +237,11 @@ func injectAndPatch(raw []byte, ef *elf.File, pack, stubs []byte, funcs, nativeL
 		}
 	}
 
-	/* pack 记录/偏移在注入阶段有回填，最终落盘前重算 manifest MAC。 */
+	/* pack 记录/偏移在注入阶段有回填，最终落盘前重算 manifest MAC。
+	 * SEED_WRAPPED 时必须用明文 key_seed 密封（与 runtime pack_manifest_mac32 对齐）。 */
 	packEnd := packStart + int64(len(pack))
 	if packStart >= 0 && packEnd <= int64(len(out)) {
-		sealPackManifestMAC(out[packStart:packEnd])
+		resealPackManifestMAC(out[packStart:packEnd], effectiveMaster)
 	}
 
 	if !noPhdr {

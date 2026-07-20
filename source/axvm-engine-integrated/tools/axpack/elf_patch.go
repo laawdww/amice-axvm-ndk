@@ -903,7 +903,8 @@ func isThirdPartySkipSymbol(name string) bool {
 }
 
 /* File-static (_ZL/_ZZ) helpers in hook/ELF bridges: pointer/heap ABI still unsafe.
- * Only lift known business statics (fake_, grab_, crypto, filter policy). */
+ * Lift known business statics only — avoid broad tokens (filter/extract) that match
+ * /proc scrubbers and zip helpers which must stay native. */
 func isBusinessStaticProtectCandidate(lower string) bool {
 	/* Do NOT auto-lift aesCbc/hexEncode wrappers — they call OpenSSL EVP and feed
 	 * ShuanQ URL params; VM corruption yields garbage query and biz_code=-2. */
@@ -912,6 +913,7 @@ func isBusinessStaticProtectCandidate(lower string) bool {
 		"wsp_", "tamper_", "notify_java",
 		"signrate", "jd_jma_fake", "filterengine", "shuanq",
 		"anticheat_hooks_ready", "native_bypass_critical", "xorencrypt",
+		"dada_fs", "timeguard", "heartbeat",
 	} {
 		if strings.Contains(lower, p) {
 			return true
@@ -927,6 +929,7 @@ func isAppOwnedPlainCProtectCandidate(lower string) bool {
 		"tamper_", "activecrash", "active_crash", "apkverify", "native_core",
 		"write_callback",
 		"victim_", "notify_java",
+		"fs_hide", "bypass_enter", "bypass_leave",
 	} {
 		if strings.Contains(lower, p) {
 			return true
@@ -939,6 +942,16 @@ func isAppOwnedPlainCProtectCandidate(lower string) bool {
  * Business logic (fake_*, shuanq, md5 helpers, detection policy) MUST be protected. */
 func skipProtectByDefault(name string) bool {
 	lower := strings.ToLower(name)
+	/* Explicitly keep /proc filter + zip extract helpers native (hook path). */
+	for _, p := range []string{
+		"filter_lines", "filter_status", "filter_comm", "create_filtered_fd",
+		"extract_zip_entry", "filter_config_derive", "initheartbeatcallback",
+		"apkverify_logf",
+	} {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
 	/* Device-bisect toxic set for lingxitai-dada / libnative_core — keep native.
 	 * (login hot path, SIGSYS hosts/mtls, antiDebug, ActiveCrash logs, libunwind) */
 	for _, p := range []string{
@@ -1218,10 +1231,17 @@ func skipProtectByDefault(name string) bool {
 		return true
 	}
 	/* Anonymous-namespace helpers: often run from .init_array / OBF paths; VM
-	 * before pack-ready corrupts heap (sanitize print_object @0x140). Keep native
-	 * until ctor-order + string ABI are fully proven. Named shuanq/fake stay on. */
+	 * before pack-ready corrupts heap. Allow known business anon-ns only. */
 	if strings.Contains(name, "_GLOBAL__N_") {
-		return true
+		biz := strings.Contains(lower, "shuanq") || strings.Contains(lower, "fake_") ||
+			strings.Contains(lower, "filter") || strings.Contains(lower, "crypto") ||
+			strings.Contains(lower, "logger") || strings.Contains(lower, "grab_") ||
+			strings.Contains(lower, "apkverify") || strings.Contains(lower, "dada_") ||
+			strings.Contains(lower, "heartbeat") || strings.Contains(lower, "timeguard") ||
+			strings.Contains(lower, "xorencrypt") || strings.Contains(lower, "signrate")
+		if !biz {
+			return true
+		}
 	}
 	/* C++ ctors/dtors — objects with std::string/map must be constructed natively
 	 * or members are garbage (ShuanQApiClientC2 → map crash in addRequestParam). */

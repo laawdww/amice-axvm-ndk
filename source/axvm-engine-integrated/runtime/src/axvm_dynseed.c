@@ -29,7 +29,7 @@ static uint32_t dynseed_fnv1a32(const uint8_t *p, size_t n)
 
 void axvm_dynseed_master_cipher(uint8_t *buf, size_t n, const uint8_t nonce[16])
 {
-    /* HMAC-SHA256(nonce, "AXDS-MK2"||block) — must match axpack dynseedMasterCipher. */
+    /* Legacy MK2: HMAC-SHA256(nonce, "AXDS-MK2"||block) — nonce is public. */
     size_t off;
     unsigned block;
     if (!buf || !nonce || n == 0) {
@@ -39,7 +39,6 @@ void axvm_dynseed_master_cipher(uint8_t *buf, size_t n, const uint8_t nonce[16])
         uint8_t msg[9];
         uint8_t ks[AXVM_SHA256_DIGEST];
         size_t chunk;
-        /* Obfuscated "AXDS-MK2" — volatile XOR so compiler cannot fold to .rodata string. */
         {
             volatile uint8_t x = 0xA5u;
             msg[0] = (uint8_t)(0xE4u ^ x);
@@ -63,6 +62,99 @@ void axvm_dynseed_master_cipher(uint8_t *buf, size_t n, const uint8_t nonce[16])
         volatile uint8_t *w = ks;
         for (size_t i = 0; i < sizeof(ks); ++i) {
             w[i] = 0;
+        }
+    }
+}
+
+/* MK3 wrap key: HMAC-SHA256(domain, "AXVM_AXDS_WRAP1"||pkg||0||cert) — matches axpack. */
+static void axds_wrap_key(const char *package, const uint8_t cert_sha256[32],
+                          uint8_t out[32])
+{
+    static const uint8_t domain[32] = {
+        0x41, 0x58, 0x56, 0x4d, 0x5f, 0x41, 0x58, 0x44,
+        0x53, 0x5f, 0x44, 0x4b, 0x31, 0x00, 0x00, 0x00,
+        0x9e, 0x37, 0x79, 0xb9, 0x7f, 0x4a, 0x7c, 0x15,
+        0xd1, 0xce, 0x4e, 0x5b, 0x9f, 0xa5, 0x5a, 0xa5,
+    };
+    uint8_t msg[320];
+    size_t n = 0;
+    size_t plen;
+    /* "AXVM_AXDS_WRAP1" ^ 0xA5 — avoid contiguous plaintext in .rodata */
+    static const uint8_t pref_enc[15] = {
+        0xe4, 0xfd, 0xf3, 0xe8, 0xfa, 0xe4, 0xfd, 0xe1,
+        0xf6, 0xfa, 0xf2, 0xf7, 0xe4, 0xf5, 0x94
+    };
+    char prefix[16];
+    volatile uint8_t x = 0xA5u;
+    size_t i;
+    if (!package || !cert_sha256 || !out) {
+        return;
+    }
+    for (i = 0; i < sizeof(pref_enc); ++i) {
+        prefix[i] = (char)(pref_enc[i] ^ x);
+    }
+    prefix[sizeof(pref_enc)] = 0;
+    plen = strlen(package);
+    if (plen > 200u) {
+        plen = 200u;
+    }
+    memcpy(msg, prefix, sizeof(pref_enc));
+    n = sizeof(pref_enc);
+    memcpy(msg + n, package, plen);
+    n += plen;
+    msg[n++] = 0;
+    memcpy(msg + n, cert_sha256, 32);
+    n += 32;
+    axvm_hmac_sha256(domain, sizeof(domain), msg, n, out);
+    memset(msg, 0, sizeof(msg));
+    volatile char *pw = prefix;
+    for (i = 0; i < sizeof(prefix); ++i) {
+        pw[i] = 0;
+    }
+}
+
+/* MK3: HMAC-SHA256(wrapKey, "AXDS-MK3"||nonce||block) */
+static void axvm_dynseed_master_cipher_v3(uint8_t *buf, size_t n,
+                                          const uint8_t nonce[16],
+                                          const uint8_t wrap_key[32])
+{
+    size_t off;
+    unsigned block;
+    if (!buf || !nonce || !wrap_key || n == 0) {
+        return;
+    }
+    for (off = 0, block = 0; off < n; off += 32u, ++block) {
+        uint8_t msg[8 + 16 + 1];
+        uint8_t ks[AXVM_SHA256_DIGEST];
+        size_t chunk;
+        {
+            volatile uint8_t x = 0xA5u;
+            msg[0] = (uint8_t)(0xE4u ^ x);
+            msg[1] = (uint8_t)(0xFDu ^ x);
+            msg[2] = (uint8_t)(0xE1u ^ x);
+            msg[3] = (uint8_t)(0xF6u ^ x);
+            msg[4] = (uint8_t)(0x88u ^ x);
+            msg[5] = (uint8_t)(0xE8u ^ x);
+            msg[6] = (uint8_t)(0xEEu ^ x);
+            msg[7] = (uint8_t)(0x96u ^ x); /* '3' ^ 0xA5 */
+        }
+        memcpy(msg + 8, nonce, 16);
+        msg[24] = (uint8_t)block;
+        axvm_hmac_sha256(wrap_key, 32, msg, sizeof(msg), ks);
+        chunk = n - off;
+        if (chunk > 32u) {
+            chunk = 32u;
+        }
+        for (size_t i = 0; i < chunk; ++i) {
+            buf[off + i] ^= ks[i];
+        }
+        volatile uint8_t *w = ks;
+        for (size_t i = 0; i < sizeof(ks); ++i) {
+            w[i] = 0;
+        }
+        volatile uint8_t *mw = msg;
+        for (size_t i = 0; i < sizeof(msg); ++i) {
+            mw[i] = 0;
         }
     }
 }
@@ -323,7 +415,7 @@ static int axds_block_valid(const axvm_dynseed_block_t *blk)
         return 0;
     }
     if (blk->version != AXDS_VERSION && blk->version != AXDS_VERSION_V2 &&
-        blk->version != AXDS_VERSION_V3) {
+        blk->version != AXDS_VERSION_V3 && blk->version != AXDS_VERSION_V4) {
         return 0;
     }
     uint32_t want = dynseed_fnv1a32((const uint8_t *)blk,
@@ -336,7 +428,13 @@ static int axds_apply_block(const axvm_dynseed_block_t *blk)
     if (!blk) {
         return 0;
     }
-    if (blk->version == AXDS_VERSION_V3) {
+    if (blk->version == AXDS_VERSION_V4) {
+        g_master_cipher_ver = 3;
+        g_apk_bind_required = 1; /* V4 always requires apk binding for MK3 */
+        if (!(blk->flags & AXDS_FLAG_APK_BIND)) {
+            return 0;
+        }
+    } else if (blk->version == AXDS_VERSION_V3) {
         g_master_cipher_ver = 2;
         g_apk_bind_required = (blk->flags & AXDS_FLAG_APK_BIND) ? 1 : 0;
     } else {
@@ -349,17 +447,23 @@ static int axds_apply_block(const axvm_dynseed_block_t *blk)
 
 int axvm_dynseed_scan_and_set(const uint8_t *buf, size_t len)
 {
+    /* Only scan a short EOF window — reject whole-file last-wins hijacks. */
     if (!buf || len < sizeof(axvm_dynseed_block_t)) {
         return 0;
     }
+    size_t window = len;
+    if (window > 4096u) {
+        window = 4096u;
+    }
+    size_t base = len - window;
     size_t last = (size_t)-1;
-    for (size_t off = 0; off + sizeof(axvm_dynseed_block_t) <= len; off += 4) {
+    for (size_t off = 0; off + sizeof(axvm_dynseed_block_t) <= window; off += 4) {
         const axvm_dynseed_block_t *blk =
-            (const axvm_dynseed_block_t *)(buf + off);
+            (const axvm_dynseed_block_t *)(buf + base + off);
         if (!axds_block_valid(blk)) {
             continue;
         }
-        last = off;
+        last = base + off;
     }
     if (last == (size_t)-1) {
         return 0;
@@ -372,7 +476,7 @@ void axvm_dynseed_reset_for_prepatch(void)
     g_master_present = 0;
     g_master_synth = 0;
     g_apk_bind_required = 0;
-    g_master_cipher_ver = 2;
+    g_master_cipher_ver = 3;
     memset(g_master_enc, 0, sizeof(g_master_enc));
     memset(g_master_nonce, 0, sizeof(g_master_nonce));
 }
@@ -382,7 +486,7 @@ int axvm_dynseed_scan_tail_and_set(const uint8_t *buf, size_t len)
     if (!buf || len < sizeof(axvm_dynseed_block_t)) {
         return 0;
     }
-    /* axpack：AXDS 在 EOF 对齐 padding 之前；跳过尾部 0 再试 EOF-64。 */
+    /* Prefer exact EOF block (after zero padding trim); no full-file fallback. */
     size_t trim = len;
     while (trim > sizeof(axvm_dynseed_block_t) && buf[trim - 1] == 0) {
         trim--;
@@ -452,6 +556,18 @@ static void master_dec_plain(uint8_t *buf, size_t n)
 {
     if (g_master_cipher_ver == 1) {
         dynseed_master_cipher_v1(buf, n, g_master_nonce);
+    } else if (g_master_cipher_ver == 3) {
+        uint8_t wrap[32];
+        if (!g_apk_binding_present) {
+            memset(buf, 0, n);
+            return;
+        }
+        axds_wrap_key(g_apk_package, g_apk_cert_sha256, wrap);
+        axvm_dynseed_master_cipher_v3(buf, n, g_master_nonce, wrap);
+        volatile uint8_t *w = wrap;
+        for (size_t i = 0; i < sizeof(wrap); ++i) {
+            w[i] = 0;
+        }
     } else {
         axvm_dynseed_master_cipher(buf, n, g_master_nonce);
     }
@@ -480,7 +596,8 @@ void axvm_derive_session_seed(const uint8_t *master_enc, size_t master_len,
     if (g_apk_bind_required) {
         if (g_apk_binding_present) {
             uint8_t raw[32];
-            master_dec_plain(plain_master, sizeof(raw));
+            master_dec_plain(plain_master, sizeof(plain_master));
+            memcpy(raw, plain_master, sizeof(raw));
             derive_apk_bound_master(raw, g_apk_package, g_apk_cert_sha256, plain_master);
             volatile uint8_t *rw = raw;
             for (size_t i = 0; i < sizeof(raw); ++i) {
