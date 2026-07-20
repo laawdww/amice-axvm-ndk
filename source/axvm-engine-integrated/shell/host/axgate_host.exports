@@ -1,0 +1,10 @@
+{
+  global:
+    JNI_OnLoad;
+    x7g;
+    x7d;
+    Java_com_hook_bypass_AxvmApkBinding_nativeEnsureBinding;
+    Java_com_hook_bypass_AxvmPrepatch_nativePrepatch;
+  local:
+    *;
+};

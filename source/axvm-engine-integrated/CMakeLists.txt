@@ -5,6 +5,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 option(AXVM_BUILD_TOOLS "Build host Go lifter" OFF)
+option(AXVM_BUILD_AXGATE "Build axgate preload shell (outer gate only)" ON)
 option(AXVM_ENABLE_GUARD "Enable anti-tamper layer" ON)
 option(AXVM_USE_COMPUTED_GOTO "ARM64 threaded interpreter dispatch" ON)
 option(AXVM_STACK_CRYPT "VM stack slot rolling XOR encryption" ON)
@@ -101,6 +102,11 @@ include(${CMAKE_SOURCE_DIR}/cmake/AxvmObfuscate.cmake)
 add_subdirectory(runtime)
 add_subdirectory(target)
 add_subdirectory(samples/victim)
+
+if(AXVM_BUILD_AXGATE)
+    add_subdirectory(shell)
+    add_subdirectory(shell/host)
+endif()
 
 if(AXVM_BUILD_TOOLS)
     add_custom_target(axlift ALL

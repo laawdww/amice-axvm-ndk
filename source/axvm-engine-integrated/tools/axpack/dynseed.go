@@ -8,7 +8,8 @@ import (
 )
 
 const (
-	axdsMagic       = 0x31445841 /* 'AXD1' */
+	axdsMagic       = 0xA73C9E1B /* opaque (not ASCII 'AXD1') */
+	axdsMagicLegacy = 0x31445841 /* 'AXD1' — tests may still probe */
 	axdsVersion     = 0x00010000
 	axdsVersion2    = 0x00010001
 	axdsVersion3    = 0x00010002 /* flags: APK_BIND; cipher MK2 (nonce-as-key, legacy) */

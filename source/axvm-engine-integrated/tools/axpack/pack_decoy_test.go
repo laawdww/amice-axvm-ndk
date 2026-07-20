@@ -17,8 +17,8 @@ func TestDecoyPackInvalidMAC(t *testing.T) {
 		t.Fatalf("short decoy blob %d", len(blob))
 	}
 	m0 := binary.LittleEndian.Uint32(blob[0:4])
-	if m0 != axpkMagic {
-		t.Fatalf("first decoy magic %08x", m0)
+	if m0 == realMagic || m0 == axpkMagic {
+		t.Fatalf("decoy magic should be opaque, got %08x", m0)
 	}
 	/* 假包 MAC 与真 seal 不同 */
 	pack, _, _ := buildPackAndStubs([]fnInfo{{

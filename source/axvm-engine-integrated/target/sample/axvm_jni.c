@@ -1507,40 +1507,89 @@ static int axvm_jni_bind_from_packagemanager(JNIEnv *env)
     (*env)->DeleteLocalRef(env, ctx);
     return ok;
 }
+
+/*
+ * Host PM often cannot query the module package (API 30+). Cert material is
+ * no longer embedded in the interpreter — host axgate unwraps bind_wrap and
+ * calls x7b before prepatch.
+ */
+static int axvm_jni_bind_from_embedded(void)
+{
+    return 0;
+}
+#endif /* __ANDROID__ && AXVM_DYNAMIC_SEED */
+
+/* Java: AxvmApkBinding.nativeEnsureBinding() — PM then host x7b; no cert in DEX/SO. */
+JNIEXPORT jboolean JNICALL
+Java_com_hook_bypass_AxvmApkBinding_nativeEnsureBinding(JNIEnv *env, jclass clazz)
+{
+    (void)clazz;
+#if defined(__ANDROID__) && defined(AXVM_DYNAMIC_SEED) && AXVM_DYNAMIC_SEED
+    if (axvm_dynseed_apk_binding_present()) {
+        return JNI_TRUE;
+    }
+    if (env && axvm_jni_bind_from_packagemanager(env)) {
+        return JNI_TRUE;
+    }
+    if (axvm_jni_bind_from_embedded()) {
+        return JNI_TRUE;
+    }
+#else
+    (void)env;
 #endif
+    return JNI_FALSE;
+}
+
+/* Opaque host→inner bind (cert lives in host uk wrap, not interpreter). */
+__attribute__((visibility("default")))
+int x7b(const char *package, const uint8_t *cert_sha256)
+{
+#if defined(AXVM_DYNAMIC_SEED) && AXVM_DYNAMIC_SEED
+    if (!package || !cert_sha256) {
+        return 0;
+    }
+    return axvm_dynseed_set_apk_binding(package, cert_sha256);
+#else
+    (void)package;
+    (void)cert_sha256;
+    return 0;
+#endif
+}
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved)
 {
     (void)reserved;
     axvm_register_dispatch((void *)(uintptr_t)x7d);
-    /* P0: bind via PackageManager in JNI_OnLoad (no embedded cert). Java path remains fallback. */
+    /* Bind via PackageManager; host may already have applied x7b. */
 #if defined(__ANDROID__)
     /* Register ApkBinding even when DEMO_JNI is OFF (LSPosed Dual-SO). */
     {
         JNIEnv *env = NULL;
         if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) == JNI_OK && env) {
 #if defined(AXVM_DYNAMIC_SEED) && AXVM_DYNAMIC_SEED
-            if (axvm_jni_bind_from_packagemanager(env)) {
+            if (axvm_dynseed_apk_binding_present()) {
+                /* host x7b already applied */
+            } else if (axvm_jni_bind_from_packagemanager(env)) {
                 __android_log_print(ANDROID_LOG_INFO, "BYP",
                                     "[Init] AxvmApkBinding(native PM) applied");
             } else {
                 __android_log_print(ANDROID_LOG_WARN, "BYP",
-                                    "[Init] AxvmApkBinding(native PM) deferred");
+                                    "[Init] AxvmApkBinding(native) deferred");
             }
 #endif
-            char cls_name[40], meth[24], sig[32];
+            char cls_name[40], meth[24], sig[8];
             /* XOR 0xA7 — avoid FindClass / RegisterNatives plaintext in .rodata */
             static const uint8_t cls_enc[] = {
                 0xc4, 0xc8, 0xca, 0x88, 0xcf, 0xc8, 0xc8, 0xcc, 0x88, 0xc5, 0xde, 0xd7, 0xc6, 0xd4, 0xd4, 0x88,
                 0xe6, 0xdf, 0xd1, 0xca, 0xe6, 0xd7, 0xcc, 0xe5, 0xce, 0xc9, 0xc3, 0xce, 0xc9, 0xc0
             };
+            /* nativeEnsureBinding */
             static const uint8_t meth_enc[] = {
-                0xc9, 0xc6, 0xd3, 0xce, 0xd1, 0xc2, 0xf4, 0xc2, 0xd3, 0xe5, 0xce, 0xc9, 0xc3, 0xce, 0xc9, 0xc0
+                0xc9, 0xc6, 0xd3, 0xce, 0xd1, 0xc2, 0xe2, 0xc9, 0xd4, 0xd2, 0xd5, 0xc2,
+                0xe5, 0xce, 0xc9, 0xc3, 0xce, 0xc9, 0xc0
             };
-            static const uint8_t sig_enc[] = {
-                0x8f, 0xeb, 0xcd, 0xc6, 0xd1, 0xc6, 0x88, 0xcb, 0xc6, 0xc9, 0xc0, 0x88, 0xf4, 0xd3, 0xd5, 0xce,
-                0xc9, 0xc0, 0x9c, 0xfc, 0xe5, 0x8e, 0xfd
-            };
+            /* ()Z */
+            static const uint8_t sig_enc[] = { 0x8f, 0x8e, 0xfd };
             volatile uint8_t xk = 0xA7u;
             size_t i;
             for (i = 0; i < sizeof(cls_enc); ++i) {
@@ -1557,7 +1606,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved)
             sig[sizeof(sig_enc)] = 0;
             JNINativeMethod bind_methods[] = {
                 { meth, sig,
-                  (void *)Java_com_hook_bypass_AxvmApkBinding_nativeSetBinding },
+                  (void *)Java_com_hook_bypass_AxvmApkBinding_nativeEnsureBinding },
             };
             jclass bind_cls = (*env)->FindClass(env, cls_name);
             if (bind_cls) {
@@ -1567,6 +1616,15 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved)
                 (*env)->ExceptionClear(env);
             }
             volatile char *w;
+            for (w = cls_name; w < cls_name + sizeof(cls_name); ++w) {
+                *w = 0;
+            }
+            for (w = meth; w < meth + sizeof(meth); ++w) {
+                *w = 0;
+            }
+            for (w = sig; w < sig + sizeof(sig); ++w) {
+                *w = 0;
+            }
             for (w = cls_name; w < cls_name + sizeof(cls_name); ++w) {
                 *w = 0;
             }

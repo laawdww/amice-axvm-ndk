@@ -2344,7 +2344,7 @@ int axvm_prepatch_so_file(const char *path)
     }
     int fd = open(path, O_RDWR | O_CLOEXEC);
     if (fd < 0) {
-        __android_log_print(ANDROID_LOG_ERROR, "AXVM", "prepatch open fail %s errno=%d", path, errno);
+        AXVM_LOGE("pp.op.fail %s e=%d", path, errno);
         return 0;
     }
     struct stat st;
@@ -2356,7 +2356,7 @@ int axvm_prepatch_so_file(const char *path)
     uint8_t *file = (uint8_t *)mmap(NULL, file_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
     if (file == MAP_FAILED) {
-        __android_log_print(ANDROID_LOG_ERROR, "AXVM", "prepatch mmap fail %s errno=%d", path, errno);
+        AXVM_LOGE("pp.mm.fail %s e=%d", path, errno);
         return 0;
     }
 
@@ -2367,29 +2367,28 @@ int axvm_prepatch_so_file(const char *path)
         axds_scan = 65536u;
     }
     if (!axvm_dynseed_scan_tail_and_set(file + file_len - axds_scan, axds_scan)) {
-        __android_log_print(ANDROID_LOG_ERROR, "AXVM", "prepatch: AXDS not found in %s", path);
+        AXVM_LOGE("pp: axds.miss %s", path);
         munmap(file, file_len);
         return 0;
     }
     size_t axds_off = file_len - sizeof(axvm_dynseed_block_t);
-    __android_log_print(ANDROID_LOG_ERROR, "AXVM",
-                        "prepatch axds ok off=0x%zx bind=%d real=%d magic=0x%08X size=%zu",
-                        axds_off,
-                        axvm_dynseed_apk_bind_required(),
-                        axvm_dynseed_master_is_real(),
-                        axvm_dynseed_pack_magic(),
-                        file_len);
+    AXVM_LOGE("pp.ok o=%zx b=%d r=%d m=%08X s=%zu",
+              axds_off,
+              axvm_dynseed_apk_bind_required(),
+              axvm_dynseed_master_is_real(),
+              axvm_dynseed_pack_magic(),
+              file_len);
 #endif
 
     uint64_t pack_off = pack_off_in_buf(file, file_len);
     if (pack_off == 0 || pack_off + sizeof(axvm_pack_hdr_t) > file_len) {
-        __android_log_print(ANDROID_LOG_ERROR, "AXVM", "prepatch: pack not found in %s", path);
+        AXVM_LOGE("pp: pack.miss %s", path);
         munmap(file, file_len);
         return 0;
     }
     size_t tail_len = file_len - (size_t)pack_off;
     if (!pack_trusted(file + pack_off, tail_len)) {
-        __android_log_print(ANDROID_LOG_ERROR, "AXVM", "prepatch: pack untrusted %s", path);
+        AXVM_LOGE("pp: pack.bad %s", path);
         munmap(file, file_len);
         return 0;
     }

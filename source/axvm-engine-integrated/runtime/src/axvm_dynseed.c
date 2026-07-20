@@ -273,6 +273,14 @@ int axvm_dynseed_set_apk_binding(const char *package, const uint8_t cert_sha256[
     if (n == 0 || n >= sizeof(g_apk_package)) {
         return 0;
     }
+    /* Seal: once bound, only identical re-bind is accepted (blocks Frida rebinding). */
+    if (g_apk_binding_present) {
+        if (strcmp(g_apk_package, package) == 0 &&
+            memcmp(g_apk_cert_sha256, cert_sha256, 32) == 0) {
+            return 1;
+        }
+        return 0;
+    }
     memcpy(g_apk_package, package, n + 1);
     memcpy(g_apk_cert_sha256, cert_sha256, 32);
     g_apk_binding_present = 1;
@@ -456,7 +464,10 @@ int axvm_dynseed_set_master(const uint8_t *master_enc, size_t enc_len,
 
 static int axds_block_valid(const axvm_dynseed_block_t *blk)
 {
-    if (!blk || blk->magic != AXDS_MAGIC) {
+    if (!blk) {
+        return 0;
+    }
+    if (blk->magic != AXDS_MAGIC && blk->magic != AXDS_MAGIC_LEGACY) {
         return 0;
     }
     if (blk->version != AXDS_VERSION && blk->version != AXDS_VERSION_V2 &&

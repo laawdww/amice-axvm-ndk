@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
-	"fmt"
 )
 
 /*
@@ -52,10 +51,19 @@ func buildDecoyPacksWithin(n int, padSeed []byte, realMagic uint32, budget int64
 
 func buildOneDecoyPack(idx int, padSeed []byte, realMagic uint32) []byte {
 	rec := make([]byte, axvmRecSizeV2)
-	name := fmt.Sprintf("_axdecoy_%d", idx)
+	// Opaque non-alnum name — fails pack_name_sane; no "_axdecoy_" ASCII fingerprint.
+	name := make([]byte, 8)
+	if _, err := rand.Read(name); err != nil {
+		for i := range name {
+			name[i] = byte(0x80 | ((idx*17 + i*3) & 0x7f))
+		}
+	}
+	for i := range name {
+		name[i] |= 0x80 // force high bit → non ASCII identifier
+	}
 	copy(rec[32:], name)
 	binary.LittleEndian.PutUint32(rec[0:], uint32(idx+1000))
-	binary.LittleEndian.PutUint32(rec[4:], fnv1a32([]byte(name)))
+	binary.LittleEndian.PutUint32(rec[4:], fnv1a32(name))
 	binary.LittleEndian.PutUint32(rec[12:], 8)
 	binary.LittleEndian.PutUint32(rec[68:], 16)
 	binary.LittleEndian.PutUint32(rec[72:], encodeStubMeta(256, 64, uint8(idx&7)))

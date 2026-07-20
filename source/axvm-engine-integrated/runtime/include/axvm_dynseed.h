@@ -26,7 +26,8 @@ extern "C" {
  */
 
 /* ---- AXDS EOF 扩展块格式（axpack 生成，loader 解析） ---- */
-#define AXDS_MAGIC   0x31445841u  /* 'AXD1' little-endian */
+#define AXDS_MAGIC          0xA73C9E1Bu  /* opaque (not ASCII) */
+#define AXDS_MAGIC_LEGACY   0x31445841u  /* 'AXD1' — accept old packs */
 #define AXDS_VERSION 0x00010000u
 #define AXDS_VERSION_V2 0x00010001u
 #define AXDS_VERSION_V3 0x00010002u /* APK_BIND + MK2 (legacy: nonce-as-HMAC-key) */

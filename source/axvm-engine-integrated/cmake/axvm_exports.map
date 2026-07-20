@@ -4,8 +4,9 @@
     /* Opaque Dual-SO stub entry points */
     x7g;
     x7d;
+    x7b;
     /* Dual-SO Java bridges (RegisterNatives may miss under memfd ClassLoader) */
-    Java_com_hook_bypass_AxvmApkBinding_nativeSetBinding;
+    Java_com_hook_bypass_AxvmApkBinding_nativeEnsureBinding;
     Java_com_hook_bypass_AxvmPrepatch_nativePrepatch;
   local:
     *;
