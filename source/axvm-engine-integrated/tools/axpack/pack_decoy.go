@@ -97,13 +97,14 @@ func buildOneDecoyPack(idx int, padSeed []byte, realMagic uint32) []byte {
 }
 
 func pickDecoyMagic(idx int, realMagic uint32) uint32 {
-	_ = realMagic /* 不得复用真 pack derived magic，避免静态排除 */
-	candidates := []uint32{
-		axpkMagic,
-		0x31585042, /* AXP2 */
-		0x32585041, /* 2XP1 */
-		0x41585031, /* APX1 */
-		0x31585030, /* AXP0 */
+	// Opaque random magics — avoid fixed ASCII AXP*/APX1 fingerprints.
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		m := binary.LittleEndian.Uint32(b[:])
+		if m != 0 && m != realMagic && m != axpkMagic && m != axnwMagicLegacy {
+			return m ^ uint32(idx+1)*0x9E3779B9
+		}
 	}
-	return candidates[idx%len(candidates)]
+	// Deterministic fallback (still non-ASCII-looking).
+	return 0x6C91A3D0 ^ uint32(idx)*0x85EBCA77 ^ (realMagic << 1)
 }

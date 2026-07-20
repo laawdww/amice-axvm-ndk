@@ -159,6 +159,9 @@ uint64_t axvm_dynseed_session_mix(const struct axvm_ctx *ctx);
  */
 uint32_t axvm_dynseed_pack_magic(void);
 
+/* Derived AXNW trailer magic (legacy 'AXNW' still accepted by loader). */
+uint32_t axvm_dynseed_axnw_magic(void);
+
 #ifdef __cplusplus
 }
 #endif

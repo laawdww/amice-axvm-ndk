@@ -2055,8 +2055,19 @@ static int prepatch_stext_in_file(uint8_t *file, size_t file_len, axvm_pack_hdr_
 #endif
 }
 
-#define AXNW_MAGIC   0x574E5841u /* 'AXNW' */
-#define AXNW_VERSION 1u
+#define AXNW_MAGIC_LEGACY 0x574E5841u /* 'AXNW' */
+#define AXNW_VERSION      1u
+
+static int axnw_magic_ok(uint32_t magic)
+{
+    if (magic == AXNW_MAGIC_LEGACY) {
+        return 1;
+    }
+    if (axvm_dynseed_master_is_real() && magic == axvm_dynseed_axnw_magic()) {
+        return 1;
+    }
+    return 0;
+}
 
 static const uint8_t *find_axnw_block(const uint8_t *buf, size_t len)
 {
@@ -2075,7 +2086,7 @@ static const uint8_t *find_axnw_block(const uint8_t *buf, size_t len)
         uint32_t ver;
         uint32_t cnt;
         memcpy(&magic, p, sizeof(magic));
-        if (magic != AXNW_MAGIC) {
+        if (!axnw_magic_ok(magic)) {
             continue;
         }
         memcpy(&ver, p + 4, sizeof(ver));

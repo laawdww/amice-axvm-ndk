@@ -1,18 +1,12 @@
 {
-
   global:
-
     JNI_OnLoad;
-
-    /* Opaque Dual-SO stub entry points (pass3: hide axvm_* Frida magnets). */
-
+    /* Opaque Dual-SO stub entry points */
     x7g;
-
     x7d;
-
+    /* Dual-SO Java bridges (RegisterNatives may miss under memfd ClassLoader) */
+    Java_com_hook_bypass_AxvmApkBinding_nativeSetBinding;
+    Java_com_hook_bypass_AxvmPrepatch_nativePrepatch;
   local:
-
     *;
-
 };
-

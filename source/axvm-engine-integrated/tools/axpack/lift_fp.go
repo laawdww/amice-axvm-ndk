@@ -491,12 +491,50 @@ func tryDecodeFloatInsn(word uint32, off int, fpUsed *bool) (liftedInsn, bool) {
 		markFP(fpUsed)
 		return liftedInsn{bytes: emitFpRRR(opFcmpD, vn, vm, 0), armOff: off, armSize: 4}, true
 	}
-	/* FMOV D,D */
-	if (word & 0xFFE0FFE0) == 0x1E604000 {
+	/* FMOV Dd, Dn — Rn in bits[9:5] (NOT Rm). Old mask 0xFFE0FFE0 wrongly required Rn==0. */
+	if (word & 0xFFFFFC00) == 0x1E604000 {
 		vd := byte(word & 0x1F)
-		vm := byte((word >> 16) & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
 		markFP(fpUsed)
-		return liftedInsn{bytes: emitFpRRR(opFmovDReg, vd, vm, 0), armOff: off, armSize: 4}, true
+		return liftedInsn{bytes: emitFpRRR(opFmovDReg, vd, vn, 0), armOff: off, armSize: 4}, true
+	}
+	/* FMOV Sd, Sn */
+	if (word & 0xFFFFFC00) == 0x1E204000 {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		markFP(fpUsed)
+		return liftedInsn{bytes: emitFpRRR(opFmovDReg, vd, vn, 0), armOff: off, armSize: 4}, true
+	}
+	/* FNEG Dd, Dn — flip sign bit via GPR. */
+	if (word & 0xFFFFFC00) == 0x1E614000 {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		markFP(fpUsed)
+		bc := []byte{opFmovXBits, scratchReg0, vn}
+		bc = append(bc, emitImm64(scratchReg1, 1<<63)...)
+		bc = append(bc, opEorReg, scratchReg0, scratchReg0, scratchReg1)
+		bc = append(bc, opFmovDBits, vd, scratchReg0)
+		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, true
+	}
+	/* UCVTF Dd, Wn — zero-extend then convert (uint32 ⊆ positive int64). */
+	if (word & 0xFFFFFC00) == 0x1E630000 {
+		vd := byte(word & 0x1F)
+		rn := byte((word >> 5) & 0x1F)
+		markFP(fpUsed)
+		bc := []byte{opMovReg, scratchReg0, rn, opZext32, scratchReg0, opFmovDX, vd, scratchReg0}
+		return liftedInsn{bytes: bc, armOff: off, armSize: 4}, true
+	}
+	/* FCSEL Dd/Sd, Dn, Dm, cond — bits[11:10]=11; CSEL on IEEE bit patterns. */
+	if (word&0xFF200C00) == 0x1E200C00 && ((word>>10)&3) == 3 {
+		vd := byte(word & 0x1F)
+		vn := byte((word >> 5) & 0x1F)
+		vm := byte((word >> 16) & 0x1F)
+		cond := byte((word >> 12) & 0xF)
+		markFP(fpUsed)
+		bc := []byte{opFmovXBits, scratchReg0, vn, opFmovXBits, scratchReg1, vm}
+		bc = append(bc, opCselReg, scratchReg0, scratchReg0, scratchReg1, cond)
+		bc = append(bc, opFmovDBits, vd, scratchReg0)
+		return liftedInsn{bytes: withScratchPairSaved(bc), armOff: off, armSize: 4}, true
 	}
 	/* FMOV Dd, Xn — bit-pattern move (not SCVTF). */
 	if (word & 0xFFFFFC00) == 0x9E670000 {
@@ -604,6 +642,55 @@ func tryDecodeFloatInsn(word uint32, off int, fpUsed *bool) (liftedInsn, bool) {
 		vm := byte((word >> 16) & 0x1F)
 		markFP(fpUsed)
 		return liftedInsn{bytes: emitFpRRR(opFcmpD, vn, vm, 0), armOff: off, armSize: 4}, true
+	}
+
+	/* LDR/STR Dt/St, [Xn, Xm{, LSL #0|#scale}] — register offset. */
+	if (word&0x3F200C00) == 0x3C200800 && ((word>>10)&3) == 2 {
+		size := (word >> 30) & 3
+		opcLoad := ((word >> 22) & 3) == 1 /* 01=LDR, 00=STR for most */
+		vt := byte(word & 0x1F)
+		rn := byte((word >> 5) & 0x1F)
+		rm := byte((word >> 16) & 0x1F)
+		option := (word >> 13) & 7
+		sBit := (word >> 12) & 1
+		/* Only plain 64-bit offset forms used by AMICE (UXTX/LSL). */
+		if option != 3 && option != 7 {
+			return liftedInsn{}, false
+		}
+		var memOp byte
+		scale := uint32(0)
+		switch size {
+		case 3: /* D */
+			if opcLoad {
+				memOp = opFldrD
+			} else {
+				memOp = opFstrD
+			}
+			if sBit != 0 {
+				scale = 3
+			}
+		case 2: /* S */
+			if opcLoad {
+				memOp = opFldrS
+			} else {
+				memOp = opFstrS
+			}
+			if sBit != 0 {
+				scale = 2
+			}
+		default:
+			return liftedInsn{}, false
+		}
+		markFP(fpUsed)
+		var bc []byte
+		if scale == 0 {
+			bc = append(bc, opAddReg, scratchReg0, rn, rm)
+		} else {
+			bc = append(bc, opLslImm, scratchReg0, rm, byte(scale))
+			bc = append(bc, opAddReg, scratchReg0, rn, scratchReg0)
+		}
+		bc = append(bc, emitFpMem(memOp, vt, scratchReg0, 0)...)
+		return liftedInsn{bytes: withScratchPairSaved(bc), armOff: off, armSize: 4}, true
 	}
 
 	return liftedInsn{}, false

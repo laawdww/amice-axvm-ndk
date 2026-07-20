@@ -26,8 +26,11 @@ int axvm_got_crypt_probe_stub_leak(const void *stub_slot16);
 
 int axvm_got_crypt_selftest(void);
 
-/* 模块 P：stub BL 跳板入口（ARM64） */
-uint64_t x7g(void);
+/* 模块 P：stub BL 跳板入口（ARM64，签名同 x7d） */
+uint64_t x7g(uint32_t func_id,
+             uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
+             uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+             uint64_t sret_x8);
 
 /* 扫描已加载模块首个 stub dispatch 槽是否泄露明文指针；-1=无模块 */
 int axvm_loader_got_leak_probe(void);

@@ -390,6 +390,51 @@ uint32_t axvm_dynseed_pack_magic(void)
     return m;
 }
 
+static uint32_t derive_axnw_magic_from_raw(const uint8_t raw[32])
+{
+    /* "AXVM_AXNW_MAGIC1" via volatile XOR — no contiguous .rodata label. */
+    static const uint8_t enc[] = {
+        0xe4, 0xfd, 0xf3, 0xe8, 0xfa, 0xe4, 0xfd, 0xeb, 0xf2, 0xfa,
+        0xe8, 0xe4, 0xe2, 0xec, 0xe6, 0x94
+    };
+    char label[sizeof(enc) + 1];
+    volatile uint8_t x = 0xA5u;
+    for (size_t i = 0; i < sizeof(enc); ++i) {
+        label[i] = (char)(enc[i] ^ x);
+    }
+    label[sizeof(enc)] = 0;
+    size_t label_len = sizeof(enc);
+    uint8_t msg[16 + 32];
+    memcpy(msg, label, label_len);
+    memcpy(msg + label_len, raw, 32);
+    uint32_t h = dynseed_fnv1a32(msg, label_len + 32);
+    {
+        volatile char *w = label;
+        for (size_t i = 0; i < sizeof(label); ++i) {
+            w[i] = 0;
+        }
+    }
+    if (h == 0 || h == 0x574E5841u /* AXNW */ || h == AXPK_MAGIC) {
+        h ^= 0xA5A5A5A5u;
+    }
+    return h;
+}
+
+uint32_t axvm_dynseed_axnw_magic(void)
+{
+    if (!g_master_present || g_master_synth) {
+        return 0x574E5841u; /* legacy AXNW */
+    }
+    uint8_t raw[32];
+    decrypt_raw_seed(raw);
+    uint32_t m = derive_axnw_magic_from_raw(raw);
+    volatile uint8_t *w = raw;
+    for (size_t i = 0; i < sizeof(raw); ++i) {
+        w[i] = 0;
+    }
+    return m;
+}
+
 int axvm_dynseed_enabled(void)
 {
     return 1;
@@ -769,6 +814,11 @@ int axvm_dynseed_apk_binding_present(void)
 uint32_t axvm_dynseed_pack_magic(void)
 {
     return AXPK_MAGIC;
+}
+
+uint32_t axvm_dynseed_axnw_magic(void)
+{
+    return 0x574E5841u; /* legacy AXNW */
 }
 
 void axvm_derive_session_seed(const uint8_t *master_enc, size_t master_len,

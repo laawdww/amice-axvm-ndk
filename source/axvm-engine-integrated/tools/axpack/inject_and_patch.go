@@ -193,7 +193,7 @@ func injectAndPatch(raw []byte, ef *elf.File, pack, stubs []byte, funcs, nativeL
 	}
 
 	if len(axnwRecs) > 0 {
-		out = append(out, buildAXNWBlock(axnwRecs)...)
+		out = append(out, buildAXNWBlock(axnwRecs, rawSeed)...)
 		for int64(len(out))%16 != 0 {
 			out = append(out, 0)
 		}

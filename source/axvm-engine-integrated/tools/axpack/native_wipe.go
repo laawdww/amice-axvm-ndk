@@ -5,8 +5,9 @@ import "encoding/binary"
 /* 模块 O 扩展 — degrade 保留的 native 符号整段 stext 加密 + EOF AXNW 表供 prepatch 解密。 */
 
 const (
-	axnwMagic   = 0x574E5841 /* 'AXNW' little-endian */
-	axnwVersion = 1
+	axnwMagicLegacy = 0x574E5841 /* 'AXNW' — legacy fallback */
+	axnwVersion     = 1
+	axnwMagicLabel  = "AXVM_AXNW_MAGIC1"
 )
 
 type nativeWipeRec struct {
@@ -18,6 +19,20 @@ type nativeWipeRec struct {
 // nativeStextFuncID 与 pack 内 func_id (1..N) 隔离，高位置位。
 func nativeStextFuncID(name string) uint32 {
 	return 0x80000000 | (fnv1a32([]byte(name)) & 0x7FFFFFFF)
+}
+
+func deriveAxnwMagic(rawSeed []byte) uint32 {
+	if len(rawSeed) < 32 {
+		return axnwMagicLegacy
+	}
+	msg := make([]byte, 0, len(axnwMagicLabel)+32)
+	msg = append(msg, axnwMagicLabel...)
+	msg = append(msg, rawSeed[:32]...)
+	h := fnv1a32(msg)
+	if h == 0 || h == axnwMagicLegacy || h == axpkMagic {
+		h ^= 0xA5A5A5A5
+	}
+	return h
 }
 
 func wipeNativeSymbols(out []byte, natives []fnInfo, master []byte) []nativeWipeRec {
@@ -45,12 +60,13 @@ func wipeNativeSymbols(out []byte, natives []fnInfo, master []byte) []nativeWipe
 	return recs
 }
 
-func buildAXNWBlock(recs []nativeWipeRec) []byte {
+func buildAXNWBlock(recs []nativeWipeRec, rawSeed []byte) []byte {
 	if len(recs) == 0 {
 		return nil
 	}
+	magic := deriveAxnwMagic(rawSeed)
 	buf := make([]byte, 16+len(recs)*16)
-	binary.LittleEndian.PutUint32(buf[0:], axnwMagic)
+	binary.LittleEndian.PutUint32(buf[0:], magic)
 	binary.LittleEndian.PutUint32(buf[4:], axnwVersion)
 	binary.LittleEndian.PutUint32(buf[8:], uint32(len(recs)))
 	for i, r := range recs {

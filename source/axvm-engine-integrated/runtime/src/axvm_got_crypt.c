@@ -95,10 +95,10 @@ extern uint64_t x7d(uint32_t func_id,
                                  uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
                                  uint64_t sret_x8);
 
-uint64_t x7g_dispatch(uint32_t func_id,
-                                uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
-                                uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
-                                uint64_t sret_x8)
+uint64_t x7g(uint32_t func_id,
+             uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
+             uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+             uint64_t sret_x8)
 {
     void *fn = axvm_got_crypt_resolve_dispatch();
     if (!fn) {
