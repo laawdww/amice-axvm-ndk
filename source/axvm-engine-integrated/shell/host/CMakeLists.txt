@@ -57,6 +57,7 @@ target_link_options(axgate_host PRIVATE
     "-Wl,-u,x7g"
     "-Wl,-u,Java_com_hook_bypass_AxvmApkBinding_nativeEnsureBinding"
     "-Wl,-u,Java_com_hook_bypass_AxvmPrepatch_nativePrepatch"
+    "-Wl,-u,Java_com_hook_bypass_SoMemLoader_nativeFinishAxvmBoot"
 )
 
 target_link_options(axgate_host PRIVATE

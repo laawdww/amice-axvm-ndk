@@ -1,6 +1,6 @@
 /*
  * axgate host — outer libaxvm.so surface.
- * Decrypts/embeds real interpreter via axgate MEMFD_ELF, then forwards JNI.
+ * JNI_OnLoad only stashes JavaVM; decrypt runs after Java injects APK identity.
  */
 #include "axgate.h"
 #include "axgate_kdf.h"
@@ -45,7 +45,6 @@ static int apply_host_bind(void)
     }
     char pkg[96];
     uint8_t cert[32];
-    /* Identity from hxboot prime — never from SO-embedded bind_wrap. */
     if (!axgate_runtime_identity(pkg, sizeof(pkg), cert)) {
         return 0;
     }
@@ -111,6 +110,44 @@ static int call_inner_jni_onload(JavaVM *vm)
     }
     g_inner_jni_ok = 1;
     return resolve_inner();
+}
+
+static int finish_boot_with_identity(const char *pkg, const uint8_t *cert)
+{
+    if (!axgate_set_runtime_identity(pkg, cert)) {
+        return 0;
+    }
+    if (!axgate_ensure_booted()) {
+        return 0;
+    }
+    if (g_vm && !call_inner_jni_onload(g_vm)) {
+        return 0;
+    }
+    (void)apply_host_bind();
+    return 1;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_hook_bypass_SoMemLoader_nativeFinishAxvmBoot(JNIEnv *env, jclass clazz,
+                                                      jstring jpkg, jbyteArray jcert)
+{
+    (void)clazz;
+    if (!jpkg || !jcert || (*env)->GetArrayLength(env, jcert) != 32) {
+        return JNI_FALSE;
+    }
+    const char *pkg = (*env)->GetStringUTFChars(env, jpkg, NULL);
+    if (!pkg) {
+        return JNI_FALSE;
+    }
+    jbyte *cert = (*env)->GetByteArrayElements(env, jcert, NULL);
+    if (!cert) {
+        (*env)->ReleaseStringUTFChars(env, jpkg, pkg);
+        return JNI_FALSE;
+    }
+    int ok = finish_boot_with_identity(pkg, (const uint8_t *)cert);
+    (*env)->ReleaseByteArrayElements(env, jcert, cert, JNI_ABORT);
+    (*env)->ReleaseStringUTFChars(env, jpkg, pkg);
+    return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -186,12 +223,6 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved)
 {
     (void)reserved;
     g_vm = vm;
-    if (!axgate_ensure_booted()) {
-        return JNI_ERR;
-    }
-    if (!call_inner_jni_onload(vm)) {
-        return JNI_ERR;
-    }
-    (void)apply_host_bind();
+    /* Defer axgate_ensure_booted until nativeFinishAxvmBoot injects APK identity. */
     return JNI_VERSION_1_6;
 }

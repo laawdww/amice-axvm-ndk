@@ -11,8 +11,7 @@ extern "C" {
 
 /*
  * UW2：mask = SHA256(uk_seed || "UW2" || pkg || 0 || cert[32] || meta)
- * uk_seed 仅以打散形式存在于 host；完整解包钥依赖运行时测量的 APK 身份
- *（由 hxboot nativePrimeGate 注入，单 SO 离线不可还原）。
+ * uk_seed 打散存于 host；完整解包钥依赖运行时注入的 APK 身份（非 SO 内嵌）。
  */
 extern const uint64_t axgate_uk_q[4];
 extern const uint32_t axgate_desc_magic;
@@ -22,7 +21,8 @@ void axgate_kdf_wrap_mask(const axgate_desc_t *desc, uint8_t mask[32]);
 axgate_status_t axgate_unwrap_aes_material(const axgate_desc_t *desc,
                                            uint8_t key[16], uint8_t iv[16]);
 
-/* 从 hxboot 身份仓取 pkg+cert；成功返回 1 */
+/* Java / host 在 decrypt 前注入；成功返回 1 */
+int axgate_set_runtime_identity(const char *pkg, const uint8_t cert[32]);
 int axgate_runtime_identity(char *out_pkg, size_t pkg_cap, uint8_t out_cert[32]);
 
 #ifdef __cplusplus

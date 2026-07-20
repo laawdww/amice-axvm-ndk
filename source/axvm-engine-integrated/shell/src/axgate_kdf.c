@@ -2,12 +2,13 @@
 #include "axgate_integrity.h"
 #include "axgate_aes.h"
 
-#include <dlfcn.h>
 #include <string.h>
 
 #define AXGATE_UK_XOR 0xD00DF00DD00DF00Dull
 
-typedef int (*hx_gate_get_fn)(char *pkg, size_t pkg_cap, uint8_t cert[32]);
+static char g_rt_pkg[96];
+static uint8_t g_rt_cert[32];
+static int g_rt_ready;
 
 void axgate_uk_seed(uint8_t out[32])
 {
@@ -24,16 +25,33 @@ void axgate_uk_seed(uint8_t out[32])
     }
 }
 
+int axgate_set_runtime_identity(const char *pkg, const uint8_t cert[32])
+{
+    if (!pkg || !cert) {
+        return 0;
+    }
+    size_t n = strlen(pkg);
+    if (n == 0 || n >= sizeof(g_rt_pkg)) {
+        return 0;
+    }
+    memcpy(g_rt_pkg, pkg, n + 1);
+    memcpy(g_rt_cert, cert, 32);
+    g_rt_ready = 1;
+    return 1;
+}
+
 int axgate_runtime_identity(char *out_pkg, size_t pkg_cap, uint8_t out_cert[32])
 {
-    if (!out_pkg || pkg_cap < 2 || !out_cert) {
+    if (!g_rt_ready || !out_pkg || pkg_cap < 2 || !out_cert) {
         return 0;
     }
-    hx_gate_get_fn get = (hx_gate_get_fn)dlsym(RTLD_DEFAULT, "hx_gate_get_identity");
-    if (!get) {
+    size_t n = strlen(g_rt_pkg);
+    if (n == 0 || n + 1 > pkg_cap) {
         return 0;
     }
-    return get(out_pkg, pkg_cap, out_cert) ? 1 : 0;
+    memcpy(out_pkg, g_rt_pkg, n + 1);
+    memcpy(out_cert, g_rt_cert, 32);
+    return 1;
 }
 
 void axgate_kdf_wrap_mask(const axgate_desc_t *desc, uint8_t mask[32])
@@ -51,7 +69,6 @@ void axgate_kdf_wrap_mask(const axgate_desc_t *desc, uint8_t mask[32])
     axgate_uk_seed(seed);
 
     if (!axgate_runtime_identity(pkg, sizeof(pkg), cert)) {
-        /* Force wrong mask — unwrap will fail integrity/AES */
         axgate_sha256(seed, 32, mask);
         axgate_secure_wipe(seed, sizeof(seed));
         return;
@@ -67,7 +84,6 @@ void axgate_kdf_wrap_mask(const axgate_desc_t *desc, uint8_t mask[32])
 
     memcpy(buf + o, seed, 32);
     o += 32;
-    /* domain UW2\0 */
     buf[o++] = 0x55;
     buf[o++] = 0x57;
     buf[o++] = 0x32;
@@ -104,15 +120,9 @@ axgate_status_t axgate_unwrap_aes_material(const axgate_desc_t *desc,
     if (desc->flags & AXGATE_FLAG_KEY_WRAP) {
         uint8_t mask[32];
         uint8_t plain[32];
-        char pkg[96];
-        uint8_t cert[32];
-        /* Fail-closed without runtime identity */
-        if (!axgate_runtime_identity(pkg, sizeof(pkg), cert)) {
+        if (!g_rt_ready) {
             return AXGATE_ERR_AES;
         }
-        axgate_secure_wipe(pkg, sizeof(pkg));
-        axgate_secure_wipe(cert, sizeof(cert));
-
         axgate_kdf_wrap_mask(desc, mask);
         for (int i = 0; i < 32; i++) {
             plain[i] = (uint8_t)(desc->key_wrap[i] ^ mask[i]);
